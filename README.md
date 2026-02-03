@@ -50,15 +50,18 @@ http://127.0.0.1:8000
 5) To append another ZIP to the same collection, check "Append to existing" and choose the collection.
 6) Wait for the status to show "Ready", then search or ask.
 
-## Downloading DOJ documents
-1) Open the DOJ Office of Public Affairs press releases page:
+## Working with the Recently Released Epstein Files
+
+1) Download the recently released Jeffrey Epstein court documents (PDFs). These files are often available as a ZIP archive on reputable news or court websites, or may be provided by specific information repositories.
+
+2) Unzip the PDF files into a folder on your computer, for example: `~/Documents/epstein_pdfs`.
+
+3) Use the path to this folder as the `--root` argument when creating a collection. For example:
 ```
 https://www.justice.gov/opa/press-releases
 ```
-2) Open a press release related to your topic.
-3) Download any attached PDFs (often listed as "Attachments" or "Documents").
-4) Put the PDFs into a local folder (for example, `~/Documents/doj_pdfs`).
-5) Use that folder path as the `--root` when creating a collection.
+
+4) Continue with the indexing and search steps as described above to interactively search, review, and analyze the Epstein documents.
 
 ## Capabilities
 - Multi-collection support (each corpus is isolated).
@@ -142,8 +145,9 @@ export EMBEDDINGS_WORKER=1
 ```
 
 ## Model cache location (Hugging Face / embeddings)
-Embedding models are downloaded and cached under `data/models/` by default. The folder is created automatically on first run.
-If you want to pre-download models from Hugging Face, place them under `data/models/` (the app will read from that cache).
+Hugging Face models are stored under `/pdf-file-finder/models`, while embedding models used for user queries are downloaded and cached under `data/models/` by default. Both folders are created automatically on first run.  
+To pre-download Hugging Face models, place them in `/pdf-file-finder/models`.  
+To pre-download embedding models, place them in `data/models/` (the app will read from these cache locations).
 
 ## Recommended Setup by Hardware
 ### Low RAM (<= 8 GB)
