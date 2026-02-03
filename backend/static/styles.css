@@ -167,6 +167,10 @@ main {
   padding: 12px;
 }
 
+#continueBtn {
+  margin: 8px 0 12px 0;
+}
+
 #answerBox {
   margin: 10px 0;
   white-space: pre-wrap;

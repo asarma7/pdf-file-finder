@@ -251,7 +251,6 @@ def _apply_post_filters(
         if semantic_score is None:
             filtered.append(item)
             continue
-
         if cutoff is not None and semantic_score < cutoff:
             cutoff_dropped += 1
             continue

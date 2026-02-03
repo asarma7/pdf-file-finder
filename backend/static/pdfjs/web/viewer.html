@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Viewer</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #f7f7f9;
+      }
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 8px 12px;
+        background: #ffffff;
+        border-bottom: 1px solid #e0e0e0;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+      .toolbar button {
+        padding: 6px 10px;
+      }
+      .toolbar input {
+        width: 60px;
+        padding: 4px 6px;
+      }
+      .viewer {
+        display: flex;
+        justify-content: center;
+        padding: 12px;
+      }
+      canvas {
+        background: #ffffff;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+      }
+      .status {
+        padding: 8px 12px;
+        color: #555;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="toolbar">
+      <button id="prevBtn">Prev</button>
+      <button id="nextBtn">Next</button>
+      <span>Page</span>
+      <input id="pageInput" type="number" min="1" value="1" />
+      <span id="pageCount"></span>
+      <span id="zoomLabel">100%</span>
+      <button id="zoomOut">-</button>
+      <button id="zoomIn">+</button>
+    </div>
+    <div class="status" id="status">Loading...</div>
+    <div class="viewer">
+      <canvas id="pdfCanvas"></canvas>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script>
+      const urlParams = new URLSearchParams(window.location.search);
+      const fileUrl = urlParams.get("file");
+      const searchParam = urlParams.get("search");
+      const statusEl = document.getElementById("status");
+      const canvas = document.getElementById("pdfCanvas");
+      const ctx = canvas.getContext("2d");
+      const pageInput = document.getElementById("pageInput");
+      const pageCountEl = document.getElementById("pageCount");
+      const zoomLabel = document.getElementById("zoomLabel");
+      const prevBtn = document.getElementById("prevBtn");
+      const nextBtn = document.getElementById("nextBtn");
+      const zoomOut = document.getElementById("zoomOut");
+      const zoomIn = document.getElementById("zoomIn");
+
+      if (!fileUrl) {
+        statusEl.textContent = "Missing file parameter.";
+        throw new Error("Missing file parameter.");
+      }
+
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
+
+      let pdfDoc = null;
+      let pageNum = 1;
+      let scale = 1.2;
+
+      function parseHashPage() {
+        const hash = window.location.hash || "";
+        const match = hash.match(/page=(\d+)/);
+        if (match) {
+          const parsed = parseInt(match[1], 10);
+          if (!Number.isNaN(parsed) && parsed >= 1) {
+            pageNum = parsed;
+          }
+        }
+      }
+
+      function updateHash() {
+        window.location.hash = `page=${pageNum}`;
+      }
+
+      async function renderPage() {
+        if (!pdfDoc) return;
+        const page = await pdfDoc.getPage(pageNum);
+        const viewport = page.getViewport({ scale });
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        pageInput.value = pageNum;
+        pageCountEl.textContent = `/ ${pdfDoc.numPages}`;
+        zoomLabel.textContent = `${Math.round(scale * 100)}%`;
+        updateHash();
+      }
+
+      function queueRenderPage() {
+        renderPage().catch((err) => {
+          statusEl.textContent = `Render error: ${err.message}`;
+        });
+      }
+
+      prevBtn.addEventListener("click", () => {
+        if (pageNum <= 1) return;
+        pageNum -= 1;
+        queueRenderPage();
+      });
+
+      nextBtn.addEventListener("click", () => {
+        if (!pdfDoc || pageNum >= pdfDoc.numPages) return;
+        pageNum += 1;
+        queueRenderPage();
+      });
+
+      pageInput.addEventListener("change", () => {
+        const value = parseInt(pageInput.value, 10);
+        if (!pdfDoc || Number.isNaN(value)) return;
+        pageNum = Math.min(Math.max(value, 1), pdfDoc.numPages);
+        queueRenderPage();
+      });
+
+      zoomOut.addEventListener("click", () => {
+        scale = Math.max(0.5, scale - 0.1);
+        queueRenderPage();
+      });
+
+      zoomIn.addEventListener("click", () => {
+        scale = Math.min(3, scale + 0.1);
+        queueRenderPage();
+      });
+
+      window.addEventListener("hashchange", () => {
+        parseHashPage();
+        queueRenderPage();
+      });
+
+      statusEl.textContent = "Loading PDF...";
+      parseHashPage();
+      pdfjsLib
+        .getDocument({ url: fileUrl })
+        .promise.then((pdf) => {
+          pdfDoc = pdf;
+          statusEl.textContent = searchParam
+            ? `Loaded. Search term: ${searchParam}`
+            : "Loaded.";
+          pageNum = Math.min(Math.max(pageNum, 1), pdfDoc.numPages);
+          queueRenderPage();
+        })
+        .catch((err) => {
+          statusEl.textContent = `Failed to load PDF: ${err.message}`;
+        });
+    </script>
+  </body>
+</html>

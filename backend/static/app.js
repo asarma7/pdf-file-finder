@@ -177,7 +177,12 @@ async function runSearch() {
   }
 }
 
-async function runAsk() {
+let sessionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+let lastAskQuery = "";
+let lastAskOffset = 0;
+let lastCollectionId = "";
+
+async function runAsk(offset = 0, append = false) {
   const question = askQuery.value.trim();
   if (!question) {
     askStatus.textContent = "Enter a question.";
@@ -188,14 +193,22 @@ async function runAsk() {
     askStatus.textContent = "Select a collection first.";
     return;
   }
+  const queryChanged = question !== lastAskQuery;
+  const collectionChanged = collectionId !== lastCollectionId;
+  if (queryChanged || collectionChanged) {
+    lastAskOffset = 0;
+  }
   askStatus.textContent = "Thinking...";
-  answerBox.textContent = "";
-  sourcesList.innerHTML = "";
+  if (!append) {
+    answerBox.textContent = "";
+    sourcesList.innerHTML = "";
+  }
   const payload = {
     query: question,
     collection_id: collectionId,
     mode: askMode.value,
     top_k: parseInt(askTopK.value, 10) || 10,
+    offset: queryChanged || collectionChanged ? 0 : offset,
     answer_mode: answerMode.value,
     redact: askRedact.checked,
     embeddings_device: cpuEmbeddings.checked ? "cpu" : "auto",
@@ -206,6 +219,7 @@ async function runAsk() {
     llm_model: llmModel.value.trim() || llmModelSelect.value,
     llm_base_url: llmBaseUrl.value.trim(),
     llm_api_key: llmApiKey.value.trim(),
+    session_id: sessionId,
   };
   try {
     const response = await fetch("/ask", {
@@ -214,12 +228,19 @@ async function runAsk() {
       body: JSON.stringify(payload),
     });
     const data = await response.json();
-    answerBox.textContent = data.answer_markdown || "";
+    if (append && data.answer_markdown) {
+      answerBox.textContent = `${answerBox.textContent}\n\n${data.answer_markdown}`;
+    } else {
+      answerBox.textContent = data.answer_markdown || "";
+    }
     if (data.low_evidence) {
       askStatus.textContent = "Low evidence found. Try keyword mode.";
     } else {
       askStatus.textContent = "Done";
     }
+    lastAskQuery = question;
+    lastCollectionId = collectionId;
+    lastAskOffset = data.next_offset || (offset + (parseInt(askTopK.value, 10) || 10));
     const sources = data.sources || [];
     sourcesTitle.style.display = sources.length ? "block" : "none";
     sourcesList.style.display = sources.length ? "block" : "none";
@@ -242,6 +263,7 @@ async function runAsk() {
       });
       sourcesList.appendChild(li);
     });
+    continueBtn.disabled = sources.length === 0;
   } catch (err) {
     askStatus.textContent = "Ask failed.";
   }
@@ -354,7 +376,11 @@ queryInput.addEventListener("keydown", (event) => {
     runSearch();
   }
 });
-askBtn.addEventListener("click", runAsk);
+askBtn.addEventListener("click", () => runAsk(0, false));
+continueBtn.addEventListener("click", () => {
+  askQuery.value = lastAskQuery;
+  runAsk(lastAskOffset, true);
+});
 askQuery.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     runAsk();

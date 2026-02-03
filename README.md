@@ -85,6 +85,8 @@ https://www.justice.gov/opa/press-releases
   - Best for: paraphrases, vague questions, conceptual queries.
 - Hybrid: merges keyword + semantic (RRF merge).
   - Best for: most natural language questions.
+  - Hard subject gate: results must contain detected subject anchors (e.g., person/entity).
+  - Descriptor anchors (verbs/attributes) are used for soft scoring, not gating.
 
 Examples:
 - Keyword: `Spencer Kuvin` or `non-prosecution agreement`
@@ -115,6 +117,8 @@ Examples:
   - Provider: llama.cpp / Ollama / OpenAI-compatible / none
   - Model, Base URL, API key
 - HF token: used to download embedding models if needed.
+  - Conversation memory: last 3 Q/A turns are used for follow-up context (in-memory, resets on restart).
+  - Batch continue: use “Continue (next 10)” to fetch the next batch of sources for the same question.
 
 ## LLM Providers
 Set `LLM_PROVIDER` to one of:
@@ -211,5 +215,6 @@ python scripts/smoke_test.py --collection "MyDocs" --query "example question"
 - OCR output is cached under each collection folder.
 - Each collection stores its own SQLite DB and FAISS index under `data/collections/<collection_id>/`.
 - The `data/` indexes and any local `models/` files are generated locally and are not expected to be in the repo.
+- If a collection was created in a different directory and file paths changed, set `DOCQA_ROOT_OVERRIDE` to the new root. The server will use it when serving files and update the stored root path.
 
 

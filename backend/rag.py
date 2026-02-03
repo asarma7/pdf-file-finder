@@ -5,7 +5,11 @@ from .safety import redact_text
 
 
 def build_prompt(
-    query: str, excerpts: list[dict], answer_mode: str, low_evidence: bool = False
+    query: str,
+    excerpts: list[dict],
+    answer_mode: str,
+    low_evidence: bool = False,
+    memory: list[dict] | None = None,
 ) -> list[dict]:
     intro = (
         "You are a cautious assistant. Use only the provided excerpts. "
@@ -19,12 +23,22 @@ def build_prompt(
         )
     if answer_mode == "summary":
         intro = intro + " Provide a brief summary."
+    if memory:
+        intro = intro + " Use prior conversation context if referenced."
     context_lines = []
     for item in excerpts:
         label = f"{item['filename']} p.{item['page_num']}"
         context_lines.append(f"[{label}] {item['chunk_text']}")
     context = "\n\n".join(context_lines)
-    user_text = f"Question: {query}\n\nExcerpts:\n{context}"
+    memory_text = ""
+    if memory:
+        memory_blocks = []
+        for idx, item in enumerate(memory, start=1):
+            q = item.get("question", "")
+            a = item.get("answer", "")
+            memory_blocks.append(f"Turn {idx} Q: {q}\nTurn {idx} A: {a}")
+        memory_text = "Previous conversation:\n" + "\n\n".join(memory_blocks) + "\n\n"
+    user_text = f"{memory_text}Question: {query}\n\nExcerpts:\n{context}"
     return [
         {"role": "system", "content": intro},
         {"role": "user", "content": user_text},
@@ -72,7 +86,11 @@ def generate_answer(
     if provider == "none" or answer_mode == "sources_only":
         return {"answer_markdown": "", "provider": "none"}
     messages = build_prompt(
-        query, excerpts, answer_mode, low_evidence=bool(options.get("low_evidence"))
+        query,
+        excerpts,
+        answer_mode,
+        low_evidence=bool(options.get("low_evidence")),
+        memory=options.get("memory"),
     )
     if provider == "llama_cpp":
         model = options.get("model") or os.getenv("LLM_MODEL", "model")

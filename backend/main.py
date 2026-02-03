@@ -26,6 +26,73 @@ app.mount(
 
 UPLOAD_STATUS: dict[str, dict] = {}
 UPLOAD_LOCK = threading.Lock()
+MEMORY_LOCK = threading.Lock()
+MEMORY_STORE: dict[str, list[dict]] = {}
+CACHE_LOCK = threading.Lock()
+CACHE_STORE: dict[str, list[dict]] = {}
+
+
+def _remember_turn(session_id: str, question: str, answer: str, sources: list[dict]) -> None:
+    if not session_id:
+        return
+    with MEMORY_LOCK:
+        turns = MEMORY_STORE.get(session_id, [])
+        turns.append({"question": question, "answer": answer, "sources": sources})
+        MEMORY_STORE[session_id] = turns[-3:]
+
+
+def _load_memory(session_id: str) -> list[dict]:
+    if not session_id:
+        return []
+    with MEMORY_LOCK:
+        return list(MEMORY_STORE.get(session_id, []))
+
+
+def _cache_key(session_id: str, query: str) -> str:
+    return f"{session_id}:{query.strip().lower()}"
+
+
+def _load_cache(session_id: str, query: str) -> list[dict]:
+    if not session_id:
+        return []
+    key = _cache_key(session_id, query)
+    with CACHE_LOCK:
+        return list(CACHE_STORE.get(key, []))
+
+
+def _append_cache(session_id: str, query: str, results: list[dict]) -> None:
+    if not session_id or not results:
+        return
+    key = _cache_key(session_id, query)
+    with CACHE_LOCK:
+        existing = CACHE_STORE.get(key, [])
+        existing_ids = {item.get("chunk_id") for item in existing}
+        for item in results:
+            chunk_id = item.get("chunk_id")
+            if chunk_id is None or chunk_id in existing_ids:
+                continue
+            existing.append(item)
+            existing_ids.add(chunk_id)
+        CACHE_STORE[key] = existing
+
+
+def _clear_cache(session_id: str, collection_id: str | None = None, query: str | None = None) -> None:
+    if not session_id:
+        return
+    prefix = f"{session_id}:"
+    query_key = query.strip().lower() if query else None
+    with CACHE_LOCK:
+        keys = list(CACHE_STORE.keys())
+        for key in keys:
+            if not key.startswith(prefix):
+                continue
+            if query_key and not key.endswith(f":{query_key}"):
+                continue
+            if collection_id:
+                items = CACHE_STORE.get(key, [])
+                if not any(item.get("collection_id") == collection_id for item in items):
+                    continue
+            CACHE_STORE.pop(key, None)
 
 
 @app.on_event("startup")
@@ -78,6 +145,19 @@ def file(collection_id: str, doc_id: int):
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     path = os.path.join(collection["root_path"], doc["rel_path"])
+    if not os.path.exists(path):
+        default_root = str(collections.get_collection_files_dir(collection_id))
+        default_path = os.path.join(default_root, doc["rel_path"])
+        if os.path.exists(default_path):
+            collections.update_collection_root(collection_id, default_root)
+            path = default_path
+        else:
+            override_root = os.getenv("DOCQA_ROOT_OVERRIDE", "").strip()
+            if override_root:
+                override_path = os.path.join(override_root, doc["rel_path"])
+                if os.path.exists(override_path):
+                    collections.update_collection_root(collection_id, override_root)
+                    path = override_path
     return FileResponse(path, media_type="application/pdf", filename=doc["filename"])
 
 
@@ -141,6 +221,7 @@ class AskRequest(BaseModel):
     collection_id: str
     mode: str = "hybrid"
     top_k: int = 10
+    offset: int = 0
     use_rerank: bool = False
     answer_mode: str = "summary"
     redact: bool = True
@@ -152,6 +233,7 @@ class AskRequest(BaseModel):
     llm_model: str = ""
     llm_base_url: str = ""
     llm_api_key: str = ""
+    session_id: str = ""
 
 
 @app.get("/collections")
@@ -263,11 +345,12 @@ def retrieve_endpoint(request: RetrieveRequest, debug: bool = Query(False)):
         raise HTTPException(status_code=404, detail="Collection not found")
     conn = db.get_connection(collections.get_collection_db_path(request.collection_id))
     index = embeddings.load_index(collections.get_collection_faiss_path(request.collection_id))
+    pool_size = max(1, request.top_k) + max(0, request.offset)
     results, debug_info = retrieval.retrieve(
         conn,
         request.query,
         request.mode,
-        request.top_k,
+        pool_size,
         index,
         request.redact,
         request.embeddings_device,
@@ -312,21 +395,30 @@ def ask_endpoint(request: AskRequest):
         raise HTTPException(status_code=404, detail="Collection not found")
     conn = db.get_connection(collections.get_collection_db_path(request.collection_id))
     index = embeddings.load_index(collections.get_collection_faiss_path(request.collection_id))
-    results, debug_info = retrieval.retrieve(
-        conn,
-        request.query,
-        request.mode,
-        request.top_k,
-        index,
-        request.redact,
-        request.embeddings_device,
-        request.hf_token or None,
-        request.embeddings_engine,
-        request.embeddings_worker,
-        debug=False,
-    )
+    start = max(0, request.offset)
+    end = start + max(1, request.top_k)
+    cached = _load_cache(request.session_id, request.query)
+    if len(cached) < end:
+        pool_size = max(1, request.top_k) + len(cached)
+        results, debug_info = retrieval.retrieve(
+            conn,
+            request.query,
+            request.mode,
+            pool_size,
+            index,
+            request.redact,
+            request.embeddings_device,
+            request.hf_token or None,
+            request.embeddings_engine,
+            request.embeddings_worker,
+            debug=False,
+        )
+        for item in results:
+            item["collection_id"] = request.collection_id
+        _append_cache(request.session_id, request.query, results)
+        cached = _load_cache(request.session_id, request.query)
     conn.close()
-    results = results[: request.top_k]
+    results = cached[start:end]
     low_evidence = len(results) < 2
     logger.info("ask:retrieved sources=%s low_evidence=%s", len(results), low_evidence)
     citations = [
@@ -339,6 +431,7 @@ def ask_endpoint(request: AskRequest):
         }
         for item in results
     ]
+    memory = _load_memory(request.session_id)
     answer = rag.generate_answer(
         request.query,
         results,
@@ -349,8 +442,10 @@ def ask_endpoint(request: AskRequest):
             "base_url": request.llm_base_url,
             "api_key": request.llm_api_key,
             "low_evidence": low_evidence,
+            "memory": memory,
         },
     )
+    _remember_turn(request.session_id, request.query, answer.get("answer_markdown", ""), results)
     logger.info("ask:llm provider=%s", answer.get("provider", "none"))
     return {
         "query": request.query,
@@ -359,4 +454,6 @@ def ask_endpoint(request: AskRequest):
         "citations": citations,
         "provider": answer.get("provider", "none"),
         "low_evidence": low_evidence,
+        "offset": request.offset,
+        "next_offset": end,
     }
