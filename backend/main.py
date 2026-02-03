@@ -1,0 +1,342 @@
+import os
+import threading
+import logging
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+
+from . import collections, db, embeddings, indexer, rag, retrieval, search, safety
+from .utils import DATA_DIR, ensure_data_dirs
+
+
+app = FastAPI(title="Document Q&A")
+logger = logging.getLogger("docqa")
+logging.basicConfig(level=logging.INFO)
+
+BASE_DIR = DATA_DIR.parent
+templates = Jinja2Templates(directory=str(BASE_DIR / "backend" / "templates"))
+app.mount(
+    "/static",
+    StaticFiles(directory=str(BASE_DIR / "backend" / "static")),
+    name="static",
+)
+
+
+UPLOAD_STATUS: dict[str, dict] = {}
+UPLOAD_LOCK = threading.Lock()
+
+
+@app.on_event("startup")
+def startup() -> None:
+    ensure_data_dirs()
+    collections.init_registry_db()
+
+
+@app.get("/", response_class=HTMLResponse)
+def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.get("/view", response_class=HTMLResponse)
+def view(
+    request: Request,
+    collection_id: str = Query(...),
+    doc_id: int = Query(...),
+    page: int = Query(1),
+    term: str = Query(""),
+):
+    collection = collections.get_collection_by_id(collection_id)
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    conn = db.get_connection(collections.get_collection_db_path(collection_id))
+    doc = db.get_doc_by_id(conn, doc_id)
+    conn.close()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return templates.TemplateResponse(
+        "view.html",
+        {
+            "request": request,
+            "collection_id": collection_id,
+            "doc_id": doc_id,
+            "page": page,
+            "term": term,
+        },
+    )
+
+
+@app.get("/file/{collection_id}/{doc_id}")
+def file(collection_id: str, doc_id: int):
+    collection = collections.get_collection_by_id(collection_id)
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    conn = db.get_connection(collections.get_collection_db_path(collection_id))
+    doc = db.get_doc_by_id(conn, doc_id)
+    conn.close()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    path = os.path.join(collection["root_path"], doc["rel_path"])
+    return FileResponse(path, media_type="application/pdf", filename=doc["filename"])
+
+
+@app.get("/search")
+def search_endpoint(
+    collection_id: str = Query(...),
+    q: str = Query("", min_length=0),
+    limit: int = Query(50, ge=1, le=200),
+    case_sensitive: bool = Query(False),
+    mode: str = Query("fts"),
+    redact: bool = Query(False),
+):
+    query = q.strip()
+    if not query:
+        return {"query": q, "results": []}
+
+    collection = collections.get_collection_by_id(collection_id)
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    conn = db.get_connection(collections.get_collection_db_path(collection_id))
+    if mode == "regex":
+        results = search.regex_search(
+            conn,
+            query,
+            limit=limit,
+            case_sensitive=case_sensitive,
+            redact=redact,
+        )
+    else:
+        results = search.fts_search(
+            conn,
+            query,
+            limit=limit,
+            case_sensitive=case_sensitive,
+            redact=redact,
+        )
+    conn.close()
+    return {"query": q, "results": results, "collection_id": collection_id}
+
+
+class CreateCollectionRequest(BaseModel):
+    name: str
+    root_path: str
+
+
+class RetrieveRequest(BaseModel):
+    query: str
+    collection_id: str
+    mode: str = "hybrid"
+    top_k: int = 10
+    use_rerank: bool = False
+    redact: bool = True
+    embeddings_device: str = "auto"
+    hf_token: str = ""
+    embeddings_engine: str = "fastembed"
+    embeddings_worker: bool = True
+
+
+class AskRequest(BaseModel):
+    query: str
+    collection_id: str
+    mode: str = "hybrid"
+    top_k: int = 10
+    use_rerank: bool = False
+    answer_mode: str = "summary"
+    redact: bool = True
+    embeddings_device: str = "auto"
+    hf_token: str = ""
+    embeddings_engine: str = "fastembed"
+    embeddings_worker: bool = True
+    llm_provider: str = "none"
+    llm_model: str = ""
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+
+
+@app.get("/collections")
+def list_collections():
+    return {"collections": collections.list_collections()}
+
+
+@app.post("/collections")
+def create_collection(request: CreateCollectionRequest):
+    item = collections.create_collection(request.name, request.root_path)
+    return {"collection": item}
+
+
+@app.post("/collections/{collection_id}/reindex")
+def reindex_collection(collection_id: str):
+    stats = indexer.index_collection(collection_id, reindex=True)
+    return {"collection_id": collection_id, "stats": stats}
+
+
+@app.post("/collections/{collection_id}/index")
+def index_collection(collection_id: str):
+    stats = indexer.index_collection(collection_id, reindex=False)
+    return {"collection_id": collection_id, "stats": stats}
+
+
+@app.post("/collections/upload")
+def upload_collection(
+    background_tasks: BackgroundTasks,
+    name: str = Query(""),
+    collection_id: str = Query(""),
+    append: bool = Query(False),
+    file: UploadFile = File(...),
+):
+    if not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Please upload a .zip file")
+    ensure_data_dirs()
+    if append and not collection_id:
+        raise HTTPException(status_code=400, detail="collection_id is required for append")
+    if append:
+        collection = collections.get_collection_by_id(collection_id)
+        if not collection:
+            raise HTTPException(status_code=404, detail="Collection not found")
+    else:
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        collection = collections.create_collection(name, "")
+    upload_id = os.urandom(6).hex()
+    zip_path = str(DATA_DIR / f"upload_{upload_id}.zip")
+    with open(zip_path, "wb") as f:
+        f.write(file.file.read())
+    with UPLOAD_LOCK:
+        UPLOAD_STATUS[upload_id] = {"status": "queued", "collection_id": collection["id"]}
+    background_tasks.add_task(
+        _index_collection_zip_background, zip_path, upload_id, collection["id"], append
+    )
+    return {"upload_id": upload_id, "collection_id": collection["id"]}
+
+
+@app.get("/upload/status")
+def upload_status(upload_id: str):
+    with UPLOAD_LOCK:
+        status = UPLOAD_STATUS.get(upload_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    return {"upload_id": upload_id, **status}
+
+
+def _index_collection_zip_background(
+    zip_path: str, upload_id: str, collection_id: str, append: bool
+) -> None:
+    with UPLOAD_LOCK:
+        UPLOAD_STATUS[upload_id] = {"status": "processing", "collection_id": collection_id}
+    try:
+        stats = indexer.index_collection_from_zip(collection_id, zip_path, append=append)
+        with UPLOAD_LOCK:
+            UPLOAD_STATUS[upload_id] = {
+                "status": "ready",
+                "stats": stats,
+                "collection_id": collection_id,
+            }
+    except Exception as exc:
+        with UPLOAD_LOCK:
+            UPLOAD_STATUS[upload_id] = {
+                "status": "error",
+                "error": str(exc),
+                "collection_id": collection_id,
+            }
+    finally:
+        indexer.cleanup_path(zip_path)
+
+
+@app.post("/retrieve")
+def retrieve_endpoint(request: RetrieveRequest):
+    logger.info("retrieve:start mode=%s top_k=%s collection_id=%s", request.mode, request.top_k, request.collection_id)
+    if safety.contains_disallowed_query(request.query):
+        return {
+            "query": request.query,
+            "results": [],
+            "refusal": "Request blocked by safety policy.",
+        }
+    collection = collections.get_collection_by_id(request.collection_id)
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    conn = db.get_connection(collections.get_collection_db_path(request.collection_id))
+    index = embeddings.load_index(collections.get_collection_faiss_path(request.collection_id))
+    results = retrieval.retrieve(
+        conn,
+        request.query,
+        request.mode,
+        request.top_k,
+        index,
+        request.redact,
+        request.embeddings_device,
+        request.hf_token or None,
+        request.embeddings_engine,
+        request.embeddings_worker,
+    )
+    low_evidence = len(results) < 3
+    logger.info("retrieve:done results=%s", len(results))
+    conn.close()
+    return {
+        "query": request.query,
+        "results": results,
+        "collection_id": request.collection_id,
+        "low_evidence": low_evidence,
+    }
+
+
+@app.post("/ask")
+def ask_endpoint(request: AskRequest):
+    logger.info("ask:start mode=%s top_k=%s answer_mode=%s collection_id=%s", request.mode, request.top_k, request.answer_mode, request.collection_id)
+    if safety.contains_disallowed_query(request.query):
+        return {
+            "query": request.query,
+            "answer_markdown": "Request blocked by safety policy.",
+            "sources": [],
+            "citations": [],
+        }
+    collection = collections.get_collection_by_id(request.collection_id)
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    conn = db.get_connection(collections.get_collection_db_path(request.collection_id))
+    index = embeddings.load_index(collections.get_collection_faiss_path(request.collection_id))
+    results = retrieval.retrieve(
+        conn,
+        request.query,
+        request.mode,
+        request.top_k,
+        index,
+        request.redact,
+        request.embeddings_device,
+        request.hf_token or None,
+        request.embeddings_engine,
+        request.embeddings_worker,
+    )
+    conn.close()
+    low_evidence = len(results) < 3
+    logger.info("ask:retrieved sources=%s", len(results))
+    citations = [
+        {
+            "doc_id": item["doc_id"],
+            "filename": item["filename"],
+            "rel_path": item["rel_path"],
+            "page_num": item["page_num"],
+            "quote": item["chunk_text"],
+        }
+        for item in results
+    ]
+    answer = rag.generate_answer(
+        request.query,
+        results,
+        request.answer_mode,
+        {
+            "provider": request.llm_provider,
+            "model": request.llm_model,
+            "base_url": request.llm_base_url,
+            "api_key": request.llm_api_key,
+        },
+    )
+    logger.info("ask:llm provider=%s", answer.get("provider", "none"))
+    return {
+        "query": request.query,
+        "answer_markdown": answer.get("answer_markdown", ""),
+        "sources": results,
+        "citations": citations,
+        "provider": answer.get("provider", "none"),
+        "low_evidence": low_evidence,
+    }

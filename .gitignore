@@ -1,0 +1,35 @@
+.DS_Store
+
+# Python venvs / caches
+.venv/
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+
+# Local env files
+.env
+.env.*
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Local datasets / indexes / large artifacts
+DataSet 8.zip
+*.zip
+data/
+models/
+*.gguf
+
+# Editor/IDE
+.idea/
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/

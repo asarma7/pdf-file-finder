@@ -1,0 +1,180 @@
+body {
+  font-family: Arial, sans-serif;
+  margin: 0;
+  background: #f7f7f9;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+header {
+  padding: 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+h1 {
+  margin: 0 0 12px 0;
+  font-size: 20px;
+}
+
+.banner {
+  font-size: 12px;
+  color: #555;
+  margin-bottom: 10px;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.tab {
+  padding: 6px 10px;
+  border: 1px solid #e0e0e0;
+  background: #fafafa;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: #ffffff;
+  border-bottom: 2px solid #333;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.upload {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+#uploadStatus {
+  color: #555;
+  font-size: 13px;
+}
+
+#query {
+  flex: 1 1 320px;
+  padding: 8px;
+  font-size: 14px;
+}
+
+button {
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+main {
+  height: 100%;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+.content-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  height: 70vh;
+}
+
+.results {
+  background: #ffffff;
+  border: 1px solid #e0e0e0;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.viewer {
+  background: #ffffff;
+  border: 1px solid #e0e0e0;
+}
+
+#viewerFrame {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+#status {
+  margin-bottom: 12px;
+  color: #555;
+}
+
+#resultsList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.result-item {
+  border: 1px solid #ededed;
+  padding: 10px;
+  border-radius: 6px;
+  background: #fafafa;
+}
+
+.result-title {
+  display: flex;
+  justify-content: space-between;
+  font-weight: bold;
+}
+
+.page {
+  color: #888;
+}
+
+.snippet {
+  margin: 8px 0;
+  color: #333;
+}
+
+.snippet mark {
+  background: #ffe28a;
+}
+
+.result-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.ask-output {
+  background: #ffffff;
+  border: 1px solid #e0e0e0;
+  padding: 12px;
+}
+
+#answerBox {
+  margin: 10px 0;
+  white-space: pre-wrap;
+}
+
+.collections-list {
+  margin-top: 12px;
+  background: #ffffff;
+  border: 1px solid #e0e0e0;
+  padding: 12px;
+}

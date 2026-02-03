@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Keyword Search</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <h1>Document Q&amp;A</h1>
+        <div class="banner">Verify answers by opening cited pages.</div>
+        <div class="tabs">
+          <button class="tab active" data-tab="search">Search</button>
+          <button class="tab" data-tab="ask">Ask</button>
+          <button class="tab" data-tab="collections">Collections</button>
+        </div>
+      </header>
+
+      <main>
+        <section id="tab-search" class="tab-panel active">
+          <div class="controls">
+            <select id="collectionSelect"></select>
+            <input
+              id="query"
+              type="text"
+              placeholder="Search keywords or phrase..."
+              autocomplete="off"
+            />
+            <button id="searchBtn">Search</button>
+            <label><input type="checkbox" id="phrase" /> Phrase</label>
+            <label><input type="checkbox" id="regex" /> Regex</label>
+            <label><input type="checkbox" id="case" /> Case sensitive</label>
+            <label><input type="checkbox" id="redact" checked /> Redact snippets</label>
+          </div>
+          <div class="content-grid">
+            <section class="results">
+              <div id="status">Enter a query to search.</div>
+              <ul id="resultsList"></ul>
+            </section>
+            <section class="viewer">
+              <iframe id="viewerFrame" title="PDF viewer"></iframe>
+            </section>
+          </div>
+        </section>
+
+        <section id="tab-ask" class="tab-panel">
+          <div class="controls">
+            <select id="collectionSelectAsk"></select>
+            <input
+              id="askQuery"
+              type="text"
+              placeholder="Ask a question about the documents..."
+              autocomplete="off"
+            />
+            <button id="askBtn">Ask</button>
+            <label><input type="checkbox" id="askRedact" checked /> Redact outputs</label>
+          </div>
+          <div class="controls">
+            <label>Mode
+              <select id="askMode">
+                <option value="hybrid">Hybrid</option>
+                <option value="keyword">Keyword</option>
+                <option value="semantic">Semantic</option>
+              </select>
+            </label>
+            <label>Answer
+              <select id="answerMode">
+                <option value="summary" selected>Summary</option>
+                <option value="strict_qa">Strict Q&amp;A</option>
+                <option value="sources_only">Sources only</option>
+              </select>
+            </label>
+            <label>Top K
+              <input id="askTopK" type="number" value="10" min="3" max="50" />
+            </label>
+            <label><input type="checkbox" id="cpuEmbeddings" /> CPU embeddings</label>
+            <label>Embeddings
+              <select id="embeddingsEngine">
+                <option value="fastembed" selected>FastEmbed</option>
+                <option value="sentence_transformers">Sentence Transformers</option>
+                <option value="onnx">ONNX</option>
+              </select>
+            </label>
+            <label><input type="checkbox" id="embeddingsWorker" checked /> Worker process</label>
+          </div>
+          <div class="controls">
+            <label>LLM
+              <select id="llmProvider">
+                <option value="none">No LLM (sources only)</option>
+                <option value="llama_cpp">llama.cpp</option>
+                <option value="ollama">Ollama</option>
+                <option value="openai_compat">OpenAI-compatible</option>
+              </select>
+            </label>
+            <label>Model
+              <select id="llmModelSelect"></select>
+              <input id="llmModel" type="text" placeholder="custom model name" />
+            </label>
+            <label>Base URL
+              <input id="llmBaseUrl" type="text" placeholder="http://localhost:8080" />
+            </label>
+            <label>API Key
+              <input id="llmApiKey" type="password" placeholder="optional" />
+            </label>
+            <label>HF Token
+              <input id="hfToken" type="password" placeholder="optional" />
+            </label>
+          </div>
+          <div class="ask-output">
+            <div id="askStatus">Ask a question to get started.</div>
+            <div id="answerBox"></div>
+            <h3 id="sourcesTitle">Sources</h3>
+            <ul id="sourcesList"></ul>
+          </div>
+        </section>
+
+        <section id="tab-collections" class="tab-panel">
+          <div class="controls">
+            <input id="collectionName" type="text" placeholder="Collection name" />
+            <input id="collectionRoot" type="text" placeholder="/path/to/pdfs" />
+            <button id="createCollectionBtn">Create Collection</button>
+            <button id="refreshCollectionsBtn">Refresh</button>
+          </div>
+          <div class="upload">
+            <input type="file" id="zipInput" accept=".zip" />
+            <input id="zipCollectionName" type="text" placeholder="Name for ZIP collection" />
+            <label><input type="checkbox" id="appendToggle" /> Append to existing</label>
+            <select id="appendCollectionSelect"></select>
+            <button id="uploadBtn">Upload ZIP & Index</button>
+            <span id="uploadStatus">No upload running.</span>
+          </div>
+          <div class="collections-list">
+            <h3>Collections</h3>
+            <ul id="collectionsList"></ul>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
