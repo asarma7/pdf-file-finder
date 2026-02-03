@@ -216,7 +216,7 @@ async function runAsk() {
     const data = await response.json();
     answerBox.textContent = data.answer_markdown || "";
     if (data.low_evidence) {
-      askStatus.textContent = "Low evidence found.";
+      askStatus.textContent = "Low evidence found. Try keyword mode.";
     } else {
       askStatus.textContent = "Done";
     }

@@ -244,8 +244,14 @@ def _index_collection_zip_background(
 
 
 @app.post("/retrieve")
-def retrieve_endpoint(request: RetrieveRequest):
-    logger.info("retrieve:start mode=%s top_k=%s collection_id=%s", request.mode, request.top_k, request.collection_id)
+def retrieve_endpoint(request: RetrieveRequest, debug: bool = Query(False)):
+    logger.info(
+        "retrieve:start mode=%s top_k=%s collection_id=%s debug=%s",
+        request.mode,
+        request.top_k,
+        request.collection_id,
+        debug,
+    )
     if safety.contains_disallowed_query(request.query):
         return {
             "query": request.query,
@@ -257,7 +263,7 @@ def retrieve_endpoint(request: RetrieveRequest):
         raise HTTPException(status_code=404, detail="Collection not found")
     conn = db.get_connection(collections.get_collection_db_path(request.collection_id))
     index = embeddings.load_index(collections.get_collection_faiss_path(request.collection_id))
-    results = retrieval.retrieve(
+    results, debug_info = retrieval.retrieve(
         conn,
         request.query,
         request.mode,
@@ -268,21 +274,32 @@ def retrieve_endpoint(request: RetrieveRequest):
         request.hf_token or None,
         request.embeddings_engine,
         request.embeddings_worker,
+        debug=debug,
     )
-    low_evidence = len(results) < 3
-    logger.info("retrieve:done results=%s", len(results))
+    results = results[: request.top_k]
+    low_evidence = len(results) < 2
+    logger.info("retrieve:done results=%s low_evidence=%s", len(results), low_evidence)
     conn.close()
-    return {
+    payload = {
         "query": request.query,
         "results": results,
         "collection_id": request.collection_id,
         "low_evidence": low_evidence,
     }
+    if debug:
+        payload["debug_info"] = debug_info
+    return payload
 
 
 @app.post("/ask")
 def ask_endpoint(request: AskRequest):
-    logger.info("ask:start mode=%s top_k=%s answer_mode=%s collection_id=%s", request.mode, request.top_k, request.answer_mode, request.collection_id)
+    logger.info(
+        "ask:start mode=%s top_k=%s answer_mode=%s collection_id=%s",
+        request.mode,
+        request.top_k,
+        request.answer_mode,
+        request.collection_id,
+    )
     if safety.contains_disallowed_query(request.query):
         return {
             "query": request.query,
@@ -295,7 +312,7 @@ def ask_endpoint(request: AskRequest):
         raise HTTPException(status_code=404, detail="Collection not found")
     conn = db.get_connection(collections.get_collection_db_path(request.collection_id))
     index = embeddings.load_index(collections.get_collection_faiss_path(request.collection_id))
-    results = retrieval.retrieve(
+    results, debug_info = retrieval.retrieve(
         conn,
         request.query,
         request.mode,
@@ -306,10 +323,12 @@ def ask_endpoint(request: AskRequest):
         request.hf_token or None,
         request.embeddings_engine,
         request.embeddings_worker,
+        debug=False,
     )
     conn.close()
-    low_evidence = len(results) < 3
-    logger.info("ask:retrieved sources=%s", len(results))
+    results = results[: request.top_k]
+    low_evidence = len(results) < 2
+    logger.info("ask:retrieved sources=%s low_evidence=%s", len(results), low_evidence)
     citations = [
         {
             "doc_id": item["doc_id"],
@@ -329,6 +348,7 @@ def ask_endpoint(request: AskRequest):
             "model": request.llm_model,
             "base_url": request.llm_base_url,
             "api_key": request.llm_api_key,
+            "low_evidence": low_evidence,
         },
     )
     logger.info("ask:llm provider=%s", answer.get("provider", "none"))

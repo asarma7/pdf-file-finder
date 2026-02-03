@@ -4,12 +4,19 @@ import httpx
 from .safety import redact_text
 
 
-def build_prompt(query: str, excerpts: list[dict], answer_mode: str) -> list[dict]:
+def build_prompt(
+    query: str, excerpts: list[dict], answer_mode: str, low_evidence: bool = False
+) -> list[dict]:
     intro = (
         "You are a cautious assistant. Use only the provided excerpts. "
         "Every factual claim must include a citation like [filename p.X]. "
         "If the answer is not supported, say: Not found in the indexed documents."
     )
+    if low_evidence:
+        intro = (
+            intro
+            + " Evidence is weak; if not supported, say: Not found in the indexed documents."
+        )
     if answer_mode == "summary":
         intro = intro + " Provide a brief summary."
     context_lines = []
@@ -35,7 +42,7 @@ def call_openai_compat(messages: list[dict], model: str, base_url: str, api_key:
         "temperature": 0.2,
         "max_tokens": 700,
     }
-    with httpx.Client(timeout=180) as client:
+    with httpx.Client(timeout=300) as client:
         resp = client.post(url, json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
@@ -50,7 +57,7 @@ def call_ollama(messages: list[dict], model: str, base_url: str) -> str:
         "stream": False,
         "options": {"temperature": 0.2},
     }
-    with httpx.Client(timeout=180) as client:
+    with httpx.Client(timeout=300) as client:
         resp = client.post(url, json=payload)
         resp.raise_for_status()
         data = resp.json()
@@ -64,7 +71,9 @@ def generate_answer(
     provider = options.get("provider") or os.getenv("LLM_PROVIDER", "none")
     if provider == "none" or answer_mode == "sources_only":
         return {"answer_markdown": "", "provider": "none"}
-    messages = build_prompt(query, excerpts, answer_mode)
+    messages = build_prompt(
+        query, excerpts, answer_mode, low_evidence=bool(options.get("low_evidence"))
+    )
     if provider == "llama_cpp":
         model = options.get("model") or os.getenv("LLM_MODEL", "model")
         base_url = options.get("base_url") or os.getenv(
