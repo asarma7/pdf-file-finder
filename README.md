@@ -1,6 +1,6 @@
 # pdf-file-finder
 
-Local document search + Q&A with FastAPI, SQLite FTS5, PyMuPDF, optional OCR, and hybrid retrieval.
+Local document search + Q&A with FastAPI, SQLite FTS5, PyMuPDF, optional OCR, and hybrid retrieval. Built for RAG over the Epstein files.
 
 ## Quick Start (macOS)
 1) Install dependencies:
