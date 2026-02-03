@@ -18,6 +18,7 @@ pip install -r requirements.txt
 unzip "DataSet 8.zip" -d "DataSet 8"
 ```
 Note: the example dataset ZIP is not included in the repo. If you do not have it, skip this step and use your own PDFs in step 4.
+You can also download PDFs directly from DOJ press releases (see "Downloading DOJ documents" below).
 4) Create a collection:
 ```
 python scripts/create_collection.py --name "MyDocs" --root "/absolute/path/to/pdfs"
@@ -48,6 +49,16 @@ http://127.0.0.1:8000
 4) Upload a `.zip` with PDFs and give it a name.
 5) To append another ZIP to the same collection, check "Append to existing" and choose the collection.
 6) Wait for the status to show "Ready", then search or ask.
+
+## Downloading DOJ documents
+1) Open the DOJ Office of Public Affairs press releases page:
+```
+https://www.justice.gov/opa/press-releases
+```
+2) Open a press release related to your topic.
+3) Download any attached PDFs (often listed as "Attachments" or "Documents").
+4) Put the PDFs into a local folder (for example, `~/Documents/doj_pdfs`).
+5) Use that folder path as the `--root` when creating a collection.
 
 ## Capabilities
 - Multi-collection support (each corpus is isolated).
@@ -130,7 +141,20 @@ Optional worker process for query embeddings:
 export EMBEDDINGS_WORKER=1
 ```
 
+## Model cache location (Hugging Face / embeddings)
+Embedding models are downloaded and cached under `data/models/` by default. The folder is created automatically on first run.
+If you want to pre-download models from Hugging Face, place them under `data/models/` (the app will read from that cache).
+
 ## Recommended Setup by Hardware
+### Low RAM (<= 8 GB)
+- Embeddings: CPU + FastEmbed + Worker
+  ```
+  export EMBEDDINGS_DEVICE=cpu
+  export EMBEDDINGS_ENGINE=fastembed
+  export EMBEDDINGS_WORKER=1
+  ```
+- LLM: none or external (avoid local models)
+
 ### Apple Silicon (M1/M2/M3) with 8–16 GB RAM
 - Embeddings: CPU + FastEmbed + Worker
   ```
