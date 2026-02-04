@@ -214,6 +214,11 @@ class RetrieveRequest(BaseModel):
     hf_token: str = ""
     embeddings_engine: str = "fastembed"
     embeddings_worker: bool = True
+    anchor_llm_enabled: bool = False
+    llm_provider: str = "none"
+    llm_model: str = ""
+    llm_base_url: str = ""
+    llm_api_key: str = ""
 
 
 class AskRequest(BaseModel):
@@ -229,6 +234,7 @@ class AskRequest(BaseModel):
     hf_token: str = ""
     embeddings_engine: str = "fastembed"
     embeddings_worker: bool = True
+    anchor_llm_enabled: bool = False
     llm_provider: str = "none"
     llm_model: str = ""
     llm_base_url: str = ""
@@ -357,6 +363,11 @@ def retrieve_endpoint(request: RetrieveRequest, debug: bool = Query(False)):
         request.hf_token or None,
         request.embeddings_engine,
         request.embeddings_worker,
+        request.anchor_llm_enabled,
+        request.llm_provider or None,
+        request.llm_model or None,
+        request.llm_base_url or None,
+        request.llm_api_key or None,
         debug=debug,
     )
     results = results[: request.top_k]
@@ -375,7 +386,7 @@ def retrieve_endpoint(request: RetrieveRequest, debug: bool = Query(False)):
 
 
 @app.post("/ask")
-def ask_endpoint(request: AskRequest):
+def ask_endpoint(request: AskRequest, debug: bool = Query(False)):
     logger.info(
         "ask:start mode=%s top_k=%s answer_mode=%s collection_id=%s",
         request.mode,
@@ -411,7 +422,12 @@ def ask_endpoint(request: AskRequest):
             request.hf_token or None,
             request.embeddings_engine,
             request.embeddings_worker,
-            debug=False,
+            request.anchor_llm_enabled,
+            request.llm_provider or None,
+            request.llm_model or None,
+            request.llm_base_url or None,
+            request.llm_api_key or None,
+            debug=debug,
         )
         for item in results:
             item["collection_id"] = request.collection_id
@@ -447,7 +463,7 @@ def ask_endpoint(request: AskRequest):
     )
     _remember_turn(request.session_id, request.query, answer.get("answer_markdown", ""), results)
     logger.info("ask:llm provider=%s", answer.get("provider", "none"))
-    return {
+    payload = {
         "query": request.query,
         "answer_markdown": answer.get("answer_markdown", ""),
         "sources": results,
@@ -457,3 +473,6 @@ def ask_endpoint(request: AskRequest):
         "offset": request.offset,
         "next_offset": end,
     }
+    if debug:
+        payload["retrieve_debug"] = debug_info
+    return payload

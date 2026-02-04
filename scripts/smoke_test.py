@@ -17,7 +17,19 @@ def main() -> None:
 
     conn = db.get_connection(collections.get_collection_db_path(collection["id"]))
     index = embeddings.load_index(collections.get_collection_faiss_path(collection["id"]))
-    results = retrieval.retrieve(conn, args.query, "hybrid", 5, index, True)
+    results, _ = retrieval.retrieve(
+        conn,
+        args.query,
+        "hybrid",
+        5,
+        index,
+        True,
+        "auto",
+        None,
+        "fastembed",
+        True,
+        False,
+    )
     conn.close()
     for item in results:
         print(f"{item['filename']} p.{item['page_num']} | {item['snippet']}")

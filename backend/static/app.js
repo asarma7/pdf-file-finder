@@ -26,10 +26,14 @@ const askMode = document.getElementById("askMode");
 const answerMode = document.getElementById("answerMode");
 const askTopK = document.getElementById("askTopK");
 const askRedact = document.getElementById("askRedact");
+const askDebug = document.getElementById("askDebug");
+const anchorLLM = document.getElementById("anchorLLM");
 const askStatus = document.getElementById("askStatus");
 const answerBox = document.getElementById("answerBox");
 const sourcesList = document.getElementById("sourcesList");
 const sourcesTitle = document.getElementById("sourcesTitle");
+const askDebugPanel = document.getElementById("askDebugPanel");
+const askDebugInfo = document.getElementById("askDebugInfo");
 const cpuEmbeddings = document.getElementById("cpuEmbeddings");
 const embeddingsEngine = document.getElementById("embeddingsEngine");
 const embeddingsWorker = document.getElementById("embeddingsWorker");
@@ -215,6 +219,7 @@ async function runAsk(offset = 0, append = false) {
     hf_token: hfToken.value.trim(),
     embeddings_engine: embeddingsEngine.value,
     embeddings_worker: embeddingsWorker.checked,
+    anchor_llm_enabled: anchorLLM ? anchorLLM.checked : false,
     llm_provider: llmProvider.value,
     llm_model: llmModel.value.trim() || llmModelSelect.value,
     llm_base_url: llmBaseUrl.value.trim(),
@@ -222,7 +227,15 @@ async function runAsk(offset = 0, append = false) {
     session_id: sessionId,
   };
   try {
-    const response = await fetch("/ask", {
+    const debug = askDebug.checked;
+    if (askDebugPanel) {
+      askDebugPanel.open = false;
+      askDebugPanel.style.display = "none";
+    }
+    if (askDebugInfo) {
+      askDebugInfo.textContent = "";
+    }
+    const response = await fetch(debug ? "/ask?debug=true" : "/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -242,6 +255,10 @@ async function runAsk(offset = 0, append = false) {
     lastCollectionId = collectionId;
     lastAskOffset = data.next_offset || (offset + (parseInt(askTopK.value, 10) || 10));
     const sources = data.sources || [];
+    if (askDebugPanel && askDebugInfo && data.retrieve_debug) {
+      askDebugInfo.textContent = JSON.stringify(data.retrieve_debug, null, 2);
+      askDebugPanel.style.display = "block";
+    }
     sourcesTitle.style.display = sources.length ? "block" : "none";
     sourcesList.style.display = sources.length ? "block" : "none";
     sources.forEach((source) => {

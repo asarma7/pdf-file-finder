@@ -93,6 +93,27 @@ Examples:
 - Semantic: `what did the investigation focus on?`
 - Hybrid: `Which people are mentioned frequently in the case updates?`
 
+## Anchor LLM (Ask)
+The Anchor LLM extracts:
+- **Subject anchors** (main person/org/place/entity). Results without these are dropped.
+- **Descriptor anchors** (topical modifiers). These are used to gently boost ranking.
+
+How it works (for normal users):
+1) Turn on **Anchor LLM** in the Ask tab.
+2) Ask your question normally.
+3) The system uses the same LLM you selected in the UI to extract anchors.
+4) Results that don’t mention the subject are filtered out.
+
+Example:
+- Question: `Is Bill Cosby mentioned in the Epstein files?`
+- Subject anchors: `Bill Cosby`
+- Descriptor anchors: `mentioned`, `files` (often ignored as generic)
+- Returned results will only include chunks that mention **Bill Cosby**.
+
+Tips:
+- If you get no results, lower your Top K or rephrase with a clearer subject.
+- If the Anchor LLM is off, the system falls back to rule-based anchors.
+
 ## Answer Modes (Ask)
 - Summary (default): short synthesis with citations.
   - Use for: high-level answers.
@@ -107,6 +128,7 @@ Examples:
 - Answer: summary / strict / sources only.
 - Top K: number of chunks used for evidence.
 - Redact outputs: mask emails/phones/SSNs/addresses in displayed text.
+- Anchor LLM: use your selected LLM to detect subject/descriptor anchors.
 - CPU embeddings: force embeddings to run on CPU.
 - Embeddings engine:
   - FastEmbed (default, most stable)

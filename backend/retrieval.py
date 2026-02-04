@@ -3,6 +3,7 @@ import logging
 import re
 import time
 from . import embeddings
+from . import anchor_llm
 from .safety import redact_text, trim_text
 
 logger = logging.getLogger("docqa")
@@ -91,6 +92,8 @@ STOPWORDS = {
     "emails",
 }
 
+GENERIC_ANCHORS = anchor_llm.GENERIC_ANCHORS
+
 
 def _sanitize_fts_query(query: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_]+", " ", query)
@@ -145,6 +148,8 @@ def _extract_anchors(query: str) -> list[str]:
     for a in anchors:
         if a in seen:
             continue
+        if a in GENERIC_ANCHORS:
+            continue
         seen.add(a)
         deduped.append(a)
     return deduped[:12]
@@ -165,6 +170,34 @@ def _anchor_overlap(text: str, anchors: list[str]) -> int:
             if _stem(a) in tokens:
                 overlap += 1
     return overlap
+
+
+def _anchor_overlap_weighted(
+    text: str, subject_anchors: list[str], descriptor_anchors: list[str]
+) -> tuple[int, int, int]:
+    subject_overlap = _anchor_overlap(text, subject_anchors)
+    descriptor_overlap = _anchor_overlap(text, descriptor_anchors)
+    anchor_score = subject_overlap * 2 + descriptor_overlap
+    return subject_overlap, descriptor_overlap, anchor_score
+
+
+def _filter_anchor_list(values: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for raw in values:
+        value = raw.strip().lower()
+        if not value:
+            continue
+        if value in STOPWORDS or value in GENERIC_ANCHORS:
+            continue
+        cleaned.append(value)
+    seen = set()
+    deduped = []
+    for value in cleaned:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
 
 
 def _has_boilerplate(text: str) -> bool:
@@ -189,13 +222,26 @@ def _apply_post_filters(
     items: list[dict],
     query: str,
     mode: str,
+    anchor_info: dict | None = None,
     abs_min: float = ABS_MIN,
     delta: float = DELTA,
     high_conf: float = HIGH_CONF,
 ) -> tuple[list[dict], dict]:
     start_time = time.perf_counter()
-    anchors = _extract_anchors(query)
+    subject_anchors: list[str] = []
+    descriptor_anchors: list[str] = []
+    if anchor_info:
+        subject_anchors = _filter_anchor_list(anchor_info.get("subject_anchors", []) or [])
+        descriptor_anchors = _filter_anchor_list(anchor_info.get("descriptor_anchors", []) or [])
+    anchors = (
+        subject_anchors + descriptor_anchors if (subject_anchors or descriptor_anchors) else _extract_anchors(query)
+    )
     anchor_time = time.perf_counter()
+    logger.info(
+        "retrieve:anchor_llm_filtered subject=%s descriptor=%s",
+        ",".join(subject_anchors),
+        ",".join(descriptor_anchors),
+    )
     raw_scores = [float(item.get("score", 0.0)) for item in items]
     raw_stats = _score_stats(raw_scores)
     top_scores = sorted(raw_scores, reverse=True)[:10]
@@ -218,14 +264,20 @@ def _apply_post_filters(
     boilerplate_penalized = 0
     anchor_kept = 0
     anchor_dropped = 0
+    subject_gate_kept = 0
+    subject_gate_dropped = 0
     cutoff_kept = 0
     cutoff_dropped = 0
     filtered: list[dict] = []
 
     for item in items:
-        overlap = _anchor_overlap(item.get("chunk_text", ""), anchors)
+        chunk_text = item.get("chunk_text", "")
+        overlap = _anchor_overlap(chunk_text, anchors)
+        subject_overlap, descriptor_overlap, anchor_score = _anchor_overlap_weighted(
+            chunk_text, subject_anchors, descriptor_anchors
+        )
         semantic_score = item.get("semantic_score")
-        has_boiler = _has_boilerplate(item.get("chunk_text", ""))
+        has_boiler = _has_boilerplate(chunk_text)
 
         if has_boiler and overlap == 0:
             boilerplate_penalized += 1
@@ -238,37 +290,57 @@ def _apply_post_filters(
                 if mode != "keyword":
                     item["score"] = float(item.get("score", 0.0)) * 0.5
 
+        if subject_anchors:
+            if subject_overlap >= 1:
+                subject_gate_kept += 1
+            else:
+                subject_gate_dropped += 1
+                continue
+        item["anchor_score"] = anchor_score
+
         if mode == "keyword":
             filtered.append(item)
             continue
 
-        if overlap >= 1:
-            anchor_kept += 1
-        else:
-            anchor_dropped += 1
-            continue
+        if not subject_anchors:
+            if overlap >= 1:
+                anchor_kept += 1
+            else:
+                anchor_dropped += 1
+                continue
 
         if semantic_score is None:
+            if mode in ("semantic", "hybrid") and anchor_score:
+                item["score"] = float(item.get("score", 0.0)) + (anchor_score * 0.01)
             filtered.append(item)
             continue
         if cutoff is not None and semantic_score < cutoff:
             cutoff_dropped += 1
             continue
         cutoff_kept += 1
+        if mode in ("semantic", "hybrid") and anchor_score:
+            item["score"] = float(item.get("score", 0.0)) + (anchor_score * 0.01)
         filtered.append(item)
     loop_time = time.perf_counter()
 
     if mode in ("semantic", "hybrid"):
-        filtered.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        filtered.sort(
+            key=lambda x: (x.get("score", 0.0), x.get("anchor_score", 0)),
+            reverse=True,
+        )
 
     diagnostics = {
         "raw_count": len(items),
         "raw_scores_top10": top_scores,
         "raw_score_stats": raw_stats,
         "anchors": anchors,
+        "subject_anchors": subject_anchors,
+        "descriptor_anchors": descriptor_anchors,
         "boilerplate_penalized": boilerplate_penalized,
         "anchor_gate_kept": anchor_kept,
         "anchor_gate_dropped": anchor_dropped,
+        "subject_gate_kept": subject_gate_kept,
+        "subject_gate_dropped": subject_gate_dropped,
         "cutoff_threshold": cutoff,
         "cutoff_kept": cutoff_kept,
         "cutoff_dropped": cutoff_dropped,
@@ -443,13 +515,48 @@ def retrieve(
     hf_token: str | None,
     engine: str | None,
     use_worker: bool,
+    anchor_llm_enabled: bool = False,
+    anchor_llm_provider: str | None = None,
+    anchor_llm_model: str | None = None,
+    anchor_llm_base_url: str | None = None,
+    anchor_llm_api_key: str | None = None,
     debug: bool = False,
 ) -> tuple[list[dict], dict]:
     logger.info("retrieve:mode=%s top_k=%s", mode, top_k)
     debug_info: dict = {}
+    anchor_info: dict | None = None
+    if anchor_llm_enabled:
+        try:
+            anchor_info = anchor_llm.extract_anchors(
+                query,
+                provider=anchor_llm_provider,
+                model=anchor_llm_model,
+                base_url=anchor_llm_base_url,
+                api_key=anchor_llm_api_key,
+            )
+            logger.info(
+                "retrieve:anchor_llm_raw provider=%s model=%s subject=%s descriptor=%s",
+                anchor_info.get("provider"),
+                anchor_info.get("model"),
+                ",".join(anchor_info.get("subject_anchors", []) or []),
+                ",".join(anchor_info.get("descriptor_anchors", []) or []),
+            )
+            raw_text = anchor_info.get("raw") or ""
+            if raw_text:
+                logger.info("retrieve:anchor_llm_text %s", raw_text.replace("\n", "\\n"))
+        except Exception as exc:
+            logger.info("retrieve:anchor_llm_error %s", exc)
+            anchor_info = {"subject_anchors": [], "descriptor_anchors": [], "error": str(exc)}
     if mode == "keyword":
         raw = keyword_search(conn, query, top_k)
-        filtered, diagnostics = _apply_post_filters(items=raw, query=query, mode=mode)
+        filtered, diagnostics = _apply_post_filters(
+            items=raw, query=query, mode=mode, anchor_info=anchor_info
+        )
+        if debug:
+            diagnostics["keyword_query"] = _sanitize_fts_query(query)
+            diagnostics["keyword_terms"] = _tokenize(diagnostics["keyword_query"])
+            diagnostics["keyword_raw_count"] = len(raw)
+            diagnostics["anchor_llm"] = anchor_info
         debug_info = diagnostics
         results = filtered
     elif mode == "semantic":
@@ -462,7 +569,12 @@ def retrieve(
             raw = []
         for item in raw:
             item["semantic_score"] = item.get("score")
-        filtered, diagnostics = _apply_post_filters(items=raw, query=query, mode=mode)
+        filtered, diagnostics = _apply_post_filters(
+            items=raw, query=query, mode=mode, anchor_info=anchor_info
+        )
+        if debug:
+            diagnostics["semantic_raw_count"] = len(raw)
+            diagnostics["anchor_llm"] = anchor_info
         debug_info = diagnostics
         results = filtered
     else:
@@ -479,7 +591,15 @@ def retrieve(
         for item in kw:
             item["semantic_score"] = None
         merged = rrf_merge(kw, sem)
-        filtered, diagnostics = _apply_post_filters(items=merged, query=query, mode=mode)
+        filtered, diagnostics = _apply_post_filters(
+            items=merged, query=query, mode=mode, anchor_info=anchor_info
+        )
+        if debug:
+            diagnostics["keyword_query"] = _sanitize_fts_query(query)
+            diagnostics["keyword_terms"] = _tokenize(diagnostics["keyword_query"])
+            diagnostics["keyword_raw_count"] = len(kw)
+            diagnostics["semantic_raw_count"] = len(sem)
+            diagnostics["anchor_llm"] = anchor_info
         debug_info = diagnostics
         results = filtered
     if redact:

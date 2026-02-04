@@ -56,6 +56,8 @@
             />
             <button id="askBtn">Ask</button>
             <label><input type="checkbox" id="askRedact" checked /> Redact outputs</label>
+            <label><input type="checkbox" id="askDebug" /> Show debug</label>
+            <label><input type="checkbox" id="anchorLLM" /> Anchor LLM</label>
           </div>
           <div class="controls">
             <label>Mode
@@ -110,6 +112,10 @@
           </div>
           <div class="ask-output">
             <div id="askStatus">Ask a question to get started.</div>
+            <details id="askDebugPanel" class="debug-panel">
+              <summary>Debug info</summary>
+              <pre id="askDebugInfo"></pre>
+            </details>
             <div id="answerBox"></div>
             <button id="continueBtn" disabled>Continue (next 10)</button>
             <h3 id="sourcesTitle">Sources</h3>

@@ -167,6 +167,20 @@ main {
   padding: 12px;
 }
 
+.debug-panel {
+  display: none;
+  margin: 8px 0 12px 0;
+  padding: 8px;
+  border: 1px solid #e0e0e0;
+  background: #f9fafb;
+}
+
+.debug-panel pre {
+  margin: 8px 0 0;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
 #continueBtn {
   margin: 8px 0 12px 0;
 }
