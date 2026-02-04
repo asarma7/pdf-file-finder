@@ -124,7 +124,7 @@ Tips:
 
 ## Ask Options (UI)
 - Collection: which corpus to search.
-- Mode: keyword / semantic / hybrid.
+- Mode: auto / keyword / semantic / hybrid / count.
 - Answer: summary / strict / sources only.
 - Top K: number of chunks used for evidence.
 - Redact outputs: mask emails/phones/SSNs/addresses in displayed text.
@@ -238,5 +238,24 @@ python scripts/smoke_test.py --collection "MyDocs" --query "example question"
 - Each collection stores its own SQLite DB and FAISS index under `data/collections/<collection_id>/`.
 - The `data/` indexes and any local `models/` files are generated locally and are not expected to be in the repo.
 - If a collection was created in a different directory and file paths changed, set `DOCQA_ROOT_OVERRIDE` to the new root. The server will use it when serving files and update the stored root path.
+
+## Common Question Types (What Works Well Today)
+This app is strongest for retrieval-first questions where you want grounded citations.
+
+**Works well now**
+- **Lookup questions**: “What do these docs say about Ghislaine Maxwell scheduling?”  
+  - Best: `Auto` or `Hybrid` mode with Anchor LLM on.
+- **“Where is X mentioned?”**  
+  - Best: `Keyword` search (Search tab) or `Auto` in Ask.
+- **Counts / frequency**: “How many times is Donald Trump referenced?”  
+  - Best: `Count` mode (deterministic counts + example contexts).
+
+**Not yet supported (planned)**
+- **Corpus summaries**: “What are the worst things in the files?”  
+  - Needs multi-document clustering + thematic summaries.
+- **Timelines**: “When did travel changes occur?”  
+  - Needs date extraction + timeline view.
+- **Relationship graphs**: “Who emails whom most often?”  
+  - Needs header parsing + graph analysis.
 
 

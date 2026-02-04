@@ -235,21 +235,32 @@ async function runAsk(offset = 0, append = false) {
     if (askDebugInfo) {
       askDebugInfo.textContent = "";
     }
-    const response = await fetch(debug ? "/ask?debug=true" : "/ask", {
+    const response = await fetch(debug ? "/query?debug=true" : "/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
     const data = await response.json();
-    if (append && data.answer_markdown) {
-      answerBox.textContent = `${answerBox.textContent}\n\n${data.answer_markdown}`;
+    const modeUsed = data.mode_used || "ask";
+    if (modeUsed === "count") {
+      const stats = data.stats || {};
+      answerBox.textContent = `Total hits: ${stats.total_hits || 0}\nUnique pages: ${stats.unique_pages || 0}\nUnique docs: ${stats.unique_docs || 0}`;
+      askStatus.textContent = stats.total_hits ? "Done" : "No matches found.";
+    } else if (modeUsed === "search") {
+      const stats = data.stats || {};
+      answerBox.textContent = `Keyword results: ${stats.result_count || 0}`;
+      askStatus.textContent = data.low_evidence ? "Low evidence found. Try keyword mode." : "Done";
     } else {
-      answerBox.textContent = data.answer_markdown || "";
-    }
-    if (data.low_evidence) {
-      askStatus.textContent = "Low evidence found. Try keyword mode.";
-    } else {
-      askStatus.textContent = "Done";
+      if (append && data.answer_markdown) {
+        answerBox.textContent = `${answerBox.textContent}\n\n${data.answer_markdown}`;
+      } else {
+        answerBox.textContent = data.answer_markdown || "";
+      }
+      if (data.low_evidence) {
+        askStatus.textContent = "Low evidence found. Try keyword mode.";
+      } else {
+        askStatus.textContent = "Done";
+      }
     }
     lastAskQuery = question;
     lastCollectionId = collectionId;
@@ -280,7 +291,7 @@ async function runAsk(offset = 0, append = false) {
       });
       sourcesList.appendChild(li);
     });
-    continueBtn.disabled = sources.length === 0;
+    continueBtn.disabled = modeUsed !== "ask" || sources.length === 0;
   } catch (err) {
     askStatus.textContent = "Ask failed.";
   }

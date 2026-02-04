@@ -1,13 +1,14 @@
 import os
 import threading
 import logging
+import re
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from . import collections, db, embeddings, indexer, rag, retrieval, search, safety
+from . import anchor_llm, collections, count, db, embeddings, indexer, rag, retrieval, search, safety
 from .utils import DATA_DIR, ensure_data_dirs
 
 
@@ -242,6 +243,40 @@ class AskRequest(BaseModel):
     session_id: str = ""
 
 
+class QueryRequest(BaseModel):
+    query: str
+    collection_id: str
+    mode: str = "auto"
+    top_k: int = 10
+    offset: int = 0
+    answer_mode: str = "summary"
+    redact: bool = True
+    embeddings_device: str = "auto"
+    hf_token: str = ""
+    embeddings_engine: str = "fastembed"
+    embeddings_worker: bool = True
+    anchor_llm_enabled: bool = False
+    llm_provider: str = "none"
+    llm_model: str = ""
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    session_id: str = ""
+    aliases: list[str] = []
+
+
+def _route_query(query: str, mode: str) -> dict:
+    normalized = query.strip().lower()
+    if mode and mode != "auto":
+        return {"mode": mode}
+    if not normalized:
+        return {"mode": "ask"}
+    if re.search(r"\b(how many|count|number of|frequency)\b", normalized):
+        return {"mode": "count"}
+    if re.search(r"\b(where is|show all|list all|find all|every instance)\b", normalized):
+        return {"mode": "search"}
+    return {"mode": "ask"}
+
+
 @app.get("/collections")
 def list_collections():
     return {"collections": collections.list_collections()}
@@ -472,6 +507,170 @@ def ask_endpoint(request: AskRequest, debug: bool = Query(False)):
         "low_evidence": low_evidence,
         "offset": request.offset,
         "next_offset": end,
+    }
+    if debug:
+        payload["retrieve_debug"] = debug_info
+    return payload
+
+
+@app.post("/query")
+def query_endpoint(request: QueryRequest, debug: bool = Query(False)):
+    logger.info("query:start mode=%s top_k=%s collection_id=%s", request.mode, request.top_k, request.collection_id)
+    if safety.contains_disallowed_query(request.query):
+        return {
+            "query": request.query,
+            "mode_used": "blocked",
+            "answer_markdown": "Request blocked by safety policy.",
+            "sources": [],
+            "stats": {},
+            "low_evidence": True,
+        }
+    collection = collections.get_collection_by_id(request.collection_id)
+    if not collection:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    route = _route_query(request.query, request.mode)
+    mode_used = route["mode"]
+    conn = db.get_connection(collections.get_collection_db_path(request.collection_id))
+
+    if mode_used == "count":
+        term = request.query
+        aliases = list(request.aliases or [])
+        if request.anchor_llm_enabled:
+            anchor_info = anchor_llm.extract_subjects(
+                request.query,
+                provider=request.llm_provider or None,
+                model=request.llm_model or None,
+                base_url=request.llm_base_url or None,
+                api_key=request.llm_api_key or None,
+            )
+            subjects = anchor_info.get("subject_anchors", []) or []
+            if subjects:
+                term = subjects[0]
+                aliases = subjects[1:] + aliases
+        stats = count.count_mentions(
+            conn,
+            term,
+            aliases=aliases,
+            redact=request.redact,
+            limit=request.top_k,
+            debug=debug,
+        )
+        conn.close()
+        payload = {
+            "query": request.query,
+            "mode_used": "count",
+            "answer_markdown": "",
+            "sources": stats.get("contexts", []),
+            "stats": {
+                "total_hits": stats.get("total_hits", 0),
+                "unique_pages": stats.get("unique_pages", 0),
+                "unique_docs": stats.get("unique_docs", 0),
+            },
+            "low_evidence": stats.get("total_hits", 0) == 0,
+        }
+        if debug:
+            payload["debug_info"] = stats.get("debug", {})
+            payload["debug_info"]["count_term"] = term
+            payload["debug_info"]["count_aliases"] = aliases
+        return payload
+
+    if mode_used == "search":
+        search_query = request.query
+        if request.anchor_llm_enabled:
+            anchor_info = anchor_llm.extract_subjects(
+                request.query,
+                provider=request.llm_provider or None,
+                model=request.llm_model or None,
+                base_url=request.llm_base_url or None,
+                api_key=request.llm_api_key or None,
+            )
+            subjects = anchor_info.get("subject_anchors", []) or []
+            if subjects:
+                search_query = subjects[0]
+        results = search.fts_search(
+            conn,
+            search_query,
+            limit=request.top_k,
+            case_sensitive=False,
+            redact=request.redact,
+        )
+        conn.close()
+        return {
+            "query": request.query,
+            "mode_used": "search",
+            "answer_markdown": "",
+            "sources": results,
+            "stats": {"result_count": len(results), "search_query": search_query},
+            "low_evidence": len(results) < 2,
+        }
+
+    index = embeddings.load_index(collections.get_collection_faiss_path(request.collection_id))
+    start = max(0, request.offset)
+    end = start + max(1, request.top_k)
+    cached = _load_cache(request.session_id, request.query)
+    if len(cached) < end:
+        pool_size = max(1, request.top_k) + len(cached)
+        results, debug_info = retrieval.retrieve(
+            conn,
+            request.query,
+            request.mode if request.mode != "auto" else "hybrid",
+            pool_size,
+            index,
+            request.redact,
+            request.embeddings_device,
+            request.hf_token or None,
+            request.embeddings_engine,
+            request.embeddings_worker,
+            request.anchor_llm_enabled,
+            request.llm_provider or None,
+            request.llm_model or None,
+            request.llm_base_url or None,
+            request.llm_api_key or None,
+            debug=debug,
+        )
+        for item in results:
+            item["collection_id"] = request.collection_id
+        _append_cache(request.session_id, request.query, results)
+        cached = _load_cache(request.session_id, request.query)
+    conn.close()
+    results = cached[start:end]
+    low_evidence = len(results) < 2
+    citations = [
+        {
+            "doc_id": item["doc_id"],
+            "filename": item["filename"],
+            "rel_path": item["rel_path"],
+            "page_num": item["page_num"],
+            "quote": item["chunk_text"],
+        }
+        for item in results
+    ]
+    memory = _load_memory(request.session_id)
+    answer = rag.generate_answer(
+        request.query,
+        results,
+        request.answer_mode,
+        {
+            "provider": request.llm_provider,
+            "model": request.llm_model,
+            "base_url": request.llm_base_url,
+            "api_key": request.llm_api_key,
+            "low_evidence": low_evidence,
+            "memory": memory,
+        },
+    )
+    _remember_turn(request.session_id, request.query, answer.get("answer_markdown", ""), results)
+    payload = {
+        "query": request.query,
+        "mode_used": "ask",
+        "answer_markdown": answer.get("answer_markdown", ""),
+        "sources": results,
+        "citations": citations,
+        "provider": answer.get("provider", "none"),
+        "low_evidence": low_evidence,
+        "offset": request.offset,
+        "next_offset": end,
+        "stats": {},
     }
     if debug:
         payload["retrieve_debug"] = debug_info

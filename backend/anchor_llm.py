@@ -99,6 +99,19 @@ def build_anchor_messages(query: str) -> list[dict]:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def build_subject_messages(query: str) -> list[dict]:
+    system = (
+        "Extract the main subject entities from the question. "
+        "Return JSON only with key subject_anchors. "
+        "subject_anchors should be the main person/org/place/entity names (max 3). "
+        "Do not include generic terms like mention, epstein, file(s), document(s), dataset, page(s). "
+        "Return ONLY valid JSON. No code, no explanations, no Markdown."
+    )
+    example = "Example JSON:\n" '{"subject_anchors":["spencer kuvin"]}'
+    user = f"Question: {query}\n{example}\nReturn JSON only."
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
 def extract_anchors(
     query: str,
     *,
@@ -131,6 +144,42 @@ def extract_anchors(
     return {
         "subject_anchors": subject,
         "descriptor_anchors": descriptor,
+        "raw": text,
+        "provider": provider,
+        "model": model,
+    }
+
+
+def extract_subjects(
+    query: str,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+) -> dict:
+    provider = provider or os.getenv("ANCHOR_LLM_PROVIDER", "ollama")
+    if provider == "llama_cpp":
+        provider = "openai_compat"
+    model = model or os.getenv("ANCHOR_LLM_MODEL", "llama3.1:8b")
+    if provider == "openai_compat":
+        base_url = base_url or os.getenv("ANCHOR_LLM_BASE_URL", "https://api.openai.com")
+    else:
+        base_url = base_url or os.getenv("ANCHOR_LLM_BASE_URL", "http://127.0.0.1:11434")
+    api_key = api_key or os.getenv("ANCHOR_LLM_API_KEY", "")
+
+    messages = build_subject_messages(query)
+    if provider == "ollama":
+        text = call_ollama(messages, model, base_url)
+    elif provider == "openai_compat":
+        text = call_openai_compat(messages, model, base_url, api_key)
+    else:
+        return {"subject_anchors": [], "raw": "", "provider": provider}
+
+    payload = _extract_json(text)
+    subject = _normalize_anchor_list(payload.get("subject_anchors", []) or [])
+    return {
+        "subject_anchors": subject,
         "raw": text,
         "provider": provider,
         "model": model,
