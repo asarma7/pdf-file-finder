@@ -83,7 +83,7 @@ def generate_answer(
 ) -> dict:
     options = options or {}
     provider = options.get("provider") or os.getenv("LLM_PROVIDER", "none")
-    if provider == "none" or answer_mode == "sources_only":
+    if provider == "none" or answer_mode in ("sources_only", "evidence_view"):
         return {"answer_markdown": "", "provider": "none"}
     messages = build_prompt(
         query,

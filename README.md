@@ -121,14 +121,17 @@ Tips:
   - Use for: precise, factual questions.
 - Sources only: no generation, just excerpts.
   - Use for: manual review or when LLM is off.
+- Evidence view: show sources only in the Ask tab (no synthesis).
+  - Use for: “Where is X mentioned?” style review.
 
 ## Ask Options (UI)
 - Collection: which corpus to search.
-- Mode: auto / keyword / semantic / hybrid / count.
+- Mode: auto / keyword / semantic / hybrid / count / corpus summary.
 - Answer: summary / strict / sources only.
 - Top K: number of chunks used for evidence.
 - Redact outputs: mask emails/phones/SSNs/addresses in displayed text.
 - Anchor LLM: use your selected LLM to detect subject/descriptor anchors.
+- Evidence view: skip summary and show sources first.
 - CPU embeddings: force embeddings to run on CPU.
 - Embeddings engine:
   - FastEmbed (default, most stable)
@@ -249,13 +252,28 @@ This app is strongest for retrieval-first questions where you want grounded cita
   - Best: `Keyword` search (Search tab) or `Auto` in Ask.
 - **Counts / frequency**: “How many times is Donald Trump referenced?”  
   - Best: `Count` mode (deterministic counts + example contexts).
+- **Corpus summaries (sampled themes)**: “What are the main themes in these files?”  
+  - Best: `Corpus summary` mode for a thematic overview.
 
 **Not yet supported (planned)**
-- **Corpus summaries**: “What are the worst things in the files?”  
-  - Needs multi-document clustering + thematic summaries.
 - **Timelines**: “When did travel changes occur?”  
   - Needs date extraction + timeline view.
 - **Relationship graphs**: “Who emails whom most often?”  
   - Needs header parsing + graph analysis.
+
+### Example queries to test
+- **Lookup**: “What do these docs say about Ghislaine Maxwell scheduling?”
+- **Where is X mentioned**: “Where is Trump mentioned in the files?”
+- **Count**: “How many times is Spencer Kuvin mentioned?”
+- **Direct keyword search** (Search tab): `non-prosecution agreement`
+- **Anchor LLM**: “Is Bill Cosby mentioned in the Epstein files?”
+
+### Limits to be aware of
+- **Broad subjective requests** (e.g., “worst accusations”) are not handled well yet.  
+  You’ll get better results by narrowing to a person, event, or term.
+- **Exhaustive lists** (e.g., “list all allegations”) are not available.  
+  The system retrieves top‑matching evidence; it does not enumerate the full corpus.
+- **Corpus summary is sampled**: it clusters a broad pool of passages and summarizes themes.  
+  It’s useful for orientation, not for exhaustive coverage.
 
 

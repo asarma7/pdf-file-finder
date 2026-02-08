@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from . import anchor_llm, collections, count, db, embeddings, indexer, rag, retrieval, search, safety
+from . import anchor_llm, collections, count, db, embeddings, indexer, rag, retrieval, search, safety, summary
 from .utils import DATA_DIR, ensure_data_dirs
 
 
@@ -270,6 +270,8 @@ def _route_query(query: str, mode: str) -> dict:
         return {"mode": mode}
     if not normalized:
         return {"mode": "ask"}
+    if re.search(r"\b(summary|overview|themes|worst|accusations|allegations)\b", normalized):
+        return {"mode": "corpus_summary"}
     if re.search(r"\b(how many|count|number of|frequency)\b", normalized):
         return {"mode": "count"}
     if re.search(r"\b(where is|show all|list all|find all|every instance)\b", normalized):
@@ -483,19 +485,22 @@ def ask_endpoint(request: AskRequest, debug: bool = Query(False)):
         for item in results
     ]
     memory = _load_memory(request.session_id)
-    answer = rag.generate_answer(
-        request.query,
-        results,
-        request.answer_mode,
-        {
-            "provider": request.llm_provider,
-            "model": request.llm_model,
-            "base_url": request.llm_base_url,
-            "api_key": request.llm_api_key,
-            "low_evidence": low_evidence,
-            "memory": memory,
-        },
-    )
+    if request.answer_mode == "evidence_view":
+        answer = {"answer_markdown": "", "provider": "none"}
+    else:
+        answer = rag.generate_answer(
+            request.query,
+            results,
+            request.answer_mode,
+            {
+                "provider": request.llm_provider,
+                "model": request.llm_model,
+                "base_url": request.llm_base_url,
+                "api_key": request.llm_api_key,
+                "low_evidence": low_evidence,
+                "memory": memory,
+            },
+        )
     _remember_turn(request.session_id, request.query, answer.get("answer_markdown", ""), results)
     logger.info("ask:llm provider=%s", answer.get("provider", "none"))
     payload = {
@@ -573,6 +578,32 @@ def query_endpoint(request: QueryRequest, debug: bool = Query(False)):
             payload["debug_info"]["count_term"] = term
             payload["debug_info"]["count_aliases"] = aliases
         return payload
+
+    if mode_used == "corpus_summary":
+        index = embeddings.load_index(collections.get_collection_faiss_path(request.collection_id))
+        summary_payload = summary.corpus_summary(
+            query=request.query,
+            conn=conn,
+            index=index,
+            top_k=request.top_k,
+            embeddings_device=request.embeddings_device,
+            hf_token=request.hf_token or None,
+            embeddings_engine=request.embeddings_engine,
+            embeddings_worker=request.embeddings_worker,
+            llm_provider=request.llm_provider,
+            llm_model=request.llm_model,
+            llm_base_url=request.llm_base_url,
+            llm_api_key=request.llm_api_key,
+        )
+        conn.close()
+        return {
+            "query": request.query,
+            "mode_used": "corpus_summary",
+            "answer_markdown": summary_payload.get("answer_markdown", ""),
+            "themes": summary_payload.get("themes", []),
+            "stats": summary_payload.get("stats", {}),
+            "low_evidence": not summary_payload.get("themes"),
+        }
 
     if mode_used == "search":
         search_query = request.query

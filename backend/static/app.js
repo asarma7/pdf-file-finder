@@ -28,6 +28,7 @@ const askTopK = document.getElementById("askTopK");
 const askRedact = document.getElementById("askRedact");
 const askDebug = document.getElementById("askDebug");
 const anchorLLM = document.getElementById("anchorLLM");
+const evidenceView = document.getElementById("evidenceView");
 const askStatus = document.getElementById("askStatus");
 const answerBox = document.getElementById("answerBox");
 const sourcesList = document.getElementById("sourcesList");
@@ -213,7 +214,7 @@ async function runAsk(offset = 0, append = false) {
     mode: askMode.value,
     top_k: parseInt(askTopK.value, 10) || 10,
     offset: queryChanged || collectionChanged ? 0 : offset,
-    answer_mode: answerMode.value,
+    answer_mode: evidenceView && evidenceView.checked ? "evidence_view" : answerMode.value,
     redact: askRedact.checked,
     embeddings_device: cpuEmbeddings.checked ? "cpu" : "auto",
     hf_token: hfToken.value.trim(),
@@ -242,6 +243,7 @@ async function runAsk(offset = 0, append = false) {
     });
     const data = await response.json();
     const modeUsed = data.mode_used || "ask";
+    const isEvidenceView = evidenceView && evidenceView.checked && modeUsed === "ask";
     if (modeUsed === "count") {
       const stats = data.stats || {};
       answerBox.textContent = `Total hits: ${stats.total_hits || 0}\nUnique pages: ${stats.unique_pages || 0}\nUnique docs: ${stats.unique_docs || 0}`;
@@ -250,16 +252,24 @@ async function runAsk(offset = 0, append = false) {
       const stats = data.stats || {};
       answerBox.textContent = `Keyword results: ${stats.result_count || 0}`;
       askStatus.textContent = data.low_evidence ? "Low evidence found. Try keyword mode." : "Done";
+    } else if (modeUsed === "corpus_summary") {
+      answerBox.textContent = data.answer_markdown || "Corpus summary";
+      askStatus.textContent = data.low_evidence ? "Low evidence found." : "Done";
     } else {
-      if (append && data.answer_markdown) {
-        answerBox.textContent = `${answerBox.textContent}\n\n${data.answer_markdown}`;
+      if (isEvidenceView) {
+        answerBox.textContent = "";
+        askStatus.textContent = data.low_evidence ? "Low evidence found. Try keyword mode." : "Evidence view";
       } else {
-        answerBox.textContent = data.answer_markdown || "";
-      }
-      if (data.low_evidence) {
-        askStatus.textContent = "Low evidence found. Try keyword mode.";
-      } else {
-        askStatus.textContent = "Done";
+        if (append && data.answer_markdown) {
+          answerBox.textContent = `${answerBox.textContent}\n\n${data.answer_markdown}`;
+        } else {
+          answerBox.textContent = data.answer_markdown || "";
+        }
+        if (data.low_evidence) {
+          askStatus.textContent = "Low evidence found. Try keyword mode.";
+        } else {
+          askStatus.textContent = "Done";
+        }
       }
     }
     lastAskQuery = question;
@@ -270,9 +280,37 @@ async function runAsk(offset = 0, append = false) {
       askDebugInfo.textContent = JSON.stringify(data.retrieve_debug, null, 2);
       askDebugPanel.style.display = "block";
     }
-    sourcesTitle.style.display = sources.length ? "block" : "none";
-    sourcesList.style.display = sources.length ? "block" : "none";
-    sources.forEach((source) => {
+    if (modeUsed === "corpus_summary") {
+      const themes = data.themes || [];
+      sourcesTitle.textContent = "Themes";
+      sourcesTitle.style.display = themes.length ? "block" : "none";
+      sourcesList.style.display = themes.length ? "block" : "none";
+      sourcesList.innerHTML = "";
+      themes.forEach((theme) => {
+        const li = document.createElement("li");
+        li.className = "result-item";
+        const citations = theme.citations || [];
+        const snippets = citations
+          .map((item) => {
+            const link = `/view?collection_id=${collectionId}&doc_id=${item.doc_id}&page=${item.page_num}`;
+            return `<li><a href="${link}" target="_blank">${item.filename} p.${item.page_num}</a>: ${item.snippet || ""}</li>`;
+          })
+          .join("");
+        li.innerHTML = `
+          <div class="result-title">
+            <span>${theme.title || "Theme"}</span>
+          </div>
+          <div class="snippet">${theme.summary || ""}</div>
+          <ul>${snippets}</ul>
+        `;
+        sourcesList.appendChild(li);
+      });
+    } else {
+      sourcesTitle.textContent = "Sources";
+      sourcesTitle.style.display = sources.length ? "block" : "none";
+      sourcesList.style.display = sources.length ? "block" : "none";
+      sourcesList.innerHTML = "";
+      sources.forEach((source) => {
       const li = document.createElement("li");
       li.className = "result-item";
       li.innerHTML = `
@@ -290,7 +328,8 @@ async function runAsk(offset = 0, append = false) {
         viewerFrame.src = `/view?collection_id=${collectionId}&doc_id=${source.doc_id}&page=${source.page_num}&term=${encodeURIComponent(question)}`;
       });
       sourcesList.appendChild(li);
-    });
+      });
+    }
     continueBtn.disabled = modeUsed !== "ask" || sources.length === 0;
   } catch (err) {
     askStatus.textContent = "Ask failed.";

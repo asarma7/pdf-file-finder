@@ -223,6 +223,7 @@ def _apply_post_filters(
     query: str,
     mode: str,
     anchor_info: dict | None = None,
+    disable_anchor_gate: bool = False,
     abs_min: float = ABS_MIN,
     delta: float = DELTA,
     high_conf: float = HIGH_CONF,
@@ -290,7 +291,7 @@ def _apply_post_filters(
                 if mode != "keyword":
                     item["score"] = float(item.get("score", 0.0)) * 0.5
 
-        if subject_anchors:
+        if subject_anchors and not disable_anchor_gate:
             if subject_overlap >= 1:
                 subject_gate_kept += 1
             else:
@@ -302,7 +303,7 @@ def _apply_post_filters(
             filtered.append(item)
             continue
 
-        if not subject_anchors:
+        if not subject_anchors and not disable_anchor_gate:
             if overlap >= 1:
                 anchor_kept += 1
             else:
@@ -521,6 +522,7 @@ def retrieve(
     anchor_llm_base_url: str | None = None,
     anchor_llm_api_key: str | None = None,
     debug: bool = False,
+    disable_anchor_gate: bool = False,
 ) -> tuple[list[dict], dict]:
     logger.info("retrieve:mode=%s top_k=%s", mode, top_k)
     debug_info: dict = {}
@@ -550,7 +552,11 @@ def retrieve(
     if mode == "keyword":
         raw = keyword_search(conn, query, top_k)
         filtered, diagnostics = _apply_post_filters(
-            items=raw, query=query, mode=mode, anchor_info=anchor_info
+            items=raw,
+            query=query,
+            mode=mode,
+            anchor_info=anchor_info,
+            disable_anchor_gate=disable_anchor_gate,
         )
         if debug:
             diagnostics["keyword_query"] = _sanitize_fts_query(query)
@@ -570,7 +576,11 @@ def retrieve(
         for item in raw:
             item["semantic_score"] = item.get("score")
         filtered, diagnostics = _apply_post_filters(
-            items=raw, query=query, mode=mode, anchor_info=anchor_info
+            items=raw,
+            query=query,
+            mode=mode,
+            anchor_info=anchor_info,
+            disable_anchor_gate=disable_anchor_gate,
         )
         if debug:
             diagnostics["semantic_raw_count"] = len(raw)
@@ -592,7 +602,11 @@ def retrieve(
             item["semantic_score"] = None
         merged = rrf_merge(kw, sem)
         filtered, diagnostics = _apply_post_filters(
-            items=merged, query=query, mode=mode, anchor_info=anchor_info
+            items=merged,
+            query=query,
+            mode=mode,
+            anchor_info=anchor_info,
+            disable_anchor_gate=disable_anchor_gate,
         )
         if debug:
             diagnostics["keyword_query"] = _sanitize_fts_query(query)
