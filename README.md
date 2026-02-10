@@ -126,12 +126,13 @@ Tips:
 
 ## Ask Options (UI)
 - Collection: which corpus to search.
-- Mode: auto / keyword / semantic / hybrid / count / corpus summary.
+- Mode: auto / keyword / semantic / hybrid / count / corpus summary / email filter.
 - Answer: summary / strict / sources only.
 - Top K: number of chunks used for evidence.
 - Redact outputs: mask emails/phones/SSNs/addresses in displayed text.
 - Anchor LLM: use your selected LLM to detect subject/descriptor anchors.
 - Evidence view: skip summary and show sources first.
+ - Email filter fields: sender/recipient names or emails, subject/date filters.
 - CPU embeddings: force embeddings to run on CPU.
 - Embeddings engine:
   - FastEmbed (default, most stable)
@@ -254,6 +255,9 @@ This app is strongest for retrieval-first questions where you want grounded cita
   - Best: `Count` mode (deterministic counts + example contexts).
 - **Corpus summaries (sampled themes)**: “What are the main themes in these files?”  
   - Best: `Corpus summary` mode for a thematic overview.
+- **Email filtering**: “Show emails between Jeffrey Epstein and Ghislaine Maxwell about scheduling.”  
+  - Best: `Email filter` mode with sender/recipient set.
+  - Use **Email mode: Summary** for synthesized answers from filtered emails.
 
 **Not yet supported (planned)**
 - **Timelines**: “When did travel changes occur?”  
@@ -275,5 +279,8 @@ This app is strongest for retrieval-first questions where you want grounded cita
   The system retrieves top‑matching evidence; it does not enumerate the full corpus.
 - **Corpus summary is sampled**: it clusters a broad pool of passages and summarizes themes.  
   It’s useful for orientation, not for exhaustive coverage.
+- **Email filter depends on headers**: it works best when From/To/Cc are present and cleanly parsed.
+- **Name matching improves over time**: confirmed aliases are stored for future queries.
+- **Email summaries are sampled**: summaries are built from a filtered subset of pages/chunks.
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import fitz
 
+import re
 from . import chunking, collections, db, embeddings
 from .utils import ensure_data_dirs, has_tool, sha256_file, stable_ocr_name
 
@@ -101,6 +102,68 @@ def process_pdf(
         return {"status": "error", "path": path, "error": str(exc)}
 
 
+# Only look for email headers in the first N chars of a page (real headers are at top).
+EMAIL_HEADER_LOOKUP_CHARS = 1200
+
+# Match candidate emails; _is_plausible_email filters false positives (e.g. section.1, page.2).
+_EMAIL_REGEX = re.compile(
+    r"\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b"
+)
+
+
+def _normalize_header_value(value: str) -> str:
+    cleaned = re.sub(r"\s+", " ", value or "").strip()
+    return cleaned
+
+
+def _is_plausible_email(s: str) -> bool:
+    """Filter out common false positives from PDF text (e.g. section.1, page.2, no.1@...)."""
+    if not s or len(s) < 6:
+        return False
+    s = s.lower()
+    local, _, domain = s.partition("@")
+    if not local or not domain:
+        return False
+    # Reject if local part is mostly numbers or ends with .digit (e.g. section.1, fig.2)
+    if re.search(r"\.\d+$", local) or re.match(r"^[\d.]+$", local):
+        return False
+    # TLD should be letters only, 2–6 chars (avoid .com.1, .2, etc.)
+    tld = domain.split(".")[-1] if "." in domain else ""
+    if not (2 <= len(tld) <= 6 and tld.isalpha()):
+        return False
+    return True
+
+
+def _parse_names_and_emails(value: str) -> tuple[str, str]:
+    value = _normalize_header_value(value)
+    raw_emails = _EMAIL_REGEX.findall(value)
+    emails = [e for e in raw_emails if _is_plausible_email(e)]
+    name_part = value
+    for email in emails:
+        name_part = name_part.replace(email, " ")
+    name_part = re.sub(r"[<>\"']", " ", name_part)
+    name_part = re.sub(r"\s+", " ", name_part).strip()
+    name_part = name_part.lower()
+    email_part = ";".join(sorted({e.lower() for e in emails}))
+    return name_part, email_part
+
+
+def _extract_headers(page_text: str) -> dict | None:
+    """Extract From/To/Cc/Subject/Date only from the top of the page (header block). Returns None if it doesn't look like a real email header block."""
+    head = (page_text or "")[:EMAIL_HEADER_LOOKUP_CHARS]
+    headers = {}
+    for key in ("From", "To", "Cc", "Subject", "Date"):
+        match = re.search(rf"^{key}:\s*(.+)$", head, flags=re.MULTILINE | re.IGNORECASE)
+        if match:
+            headers[key.lower()] = _normalize_header_value(match.group(1))
+    # Only treat as an email page if we have at least From and (To or Date) to avoid body text
+    if not headers.get("from"):
+        return None
+    if not (headers.get("to") or headers.get("cc") or headers.get("date")):
+        return None
+    return headers
+
+
 def index_collection(collection_id: str, *, reindex: bool = False) -> dict:
     ensure_data_dirs()
     collection = collections.get_collection_by_id(collection_id)
@@ -185,8 +248,30 @@ def index_collection(collection_id: str, *, reindex: bool = False) -> dict:
                     pages_count=len(result["pages"]),
                 )
                 db.insert_pages(conn, doc_id, result["pages"])
+                email_rows = []
                 chunks_for_insert = []
                 for page_num, page_text in enumerate(result["pages"]):
+                    headers = _extract_headers(page_text)
+                    if headers:
+                        from_name, from_email = _parse_names_and_emails(headers.get("from", ""))
+                        to_name, to_email = _parse_names_and_emails(headers.get("to", ""))
+                        cc_name, cc_email = _parse_names_and_emails(headers.get("cc", ""))
+                        snippet = page_text[:400].replace("\n", " ").strip()
+                        email_rows.append(
+                            (
+                                doc_id,
+                                page_num,
+                                from_email,
+                                to_email,
+                                cc_email,
+                                from_name,
+                                to_name,
+                                cc_name,
+                                headers.get("subject"),
+                                headers.get("date"),
+                                snippet,
+                            )
+                        )
                     for chunk_index, (start, end, chunk_text) in enumerate(
                         chunking.chunk_text(page_text)
                     ):
@@ -194,6 +279,7 @@ def index_collection(collection_id: str, *, reindex: bool = False) -> dict:
                             (doc_id, page_num, chunk_index, chunk_text, start, end)
                         )
                 inserted = db.insert_chunks(conn, doc_id, chunks_for_insert)
+                db.insert_email_headers(conn, email_rows)
                 db.insert_chunks_fts(conn, doc_id)
                 conn.commit()
                 if inserted:

@@ -262,6 +262,18 @@ class QueryRequest(BaseModel):
     llm_api_key: str = ""
     session_id: str = ""
     aliases: list[str] = []
+    sender: str = ""
+    recipient: str = ""
+    subject_contains: str = ""
+    date_from: str = ""
+    date_to: str = ""
+    email_summary_mode: str = "auto"
+
+
+class EmailAliasRequest(BaseModel):
+    collection_id: str
+    name: str
+    emails: list[str]
 
 
 def _route_query(query: str, mode: str) -> dict:
@@ -387,6 +399,8 @@ def retrieve_endpoint(request: RetrieveRequest, debug: bool = Query(False)):
     if not collection:
         raise HTTPException(status_code=404, detail="Collection not found")
     conn = db.get_connection(collections.get_collection_db_path(request.collection_id))
+    db.init_db(conn)
+    db.init_db(conn)
     index = embeddings.load_index(collections.get_collection_faiss_path(request.collection_id))
     pool_size = max(1, request.top_k) + max(0, request.offset)
     results, debug_info = retrieval.retrieve(
@@ -635,6 +649,241 @@ def query_endpoint(request: QueryRequest, debug: bool = Query(False)):
             "low_evidence": len(results) < 2,
         }
 
+    if mode_used == "email_filter":
+        sender = request.sender.strip().lower()
+        recipient = request.recipient.strip().lower()
+        inferred_subjects = []
+        anchor_info = None
+        if not sender or not recipient:
+            try:
+                anchor_info = anchor_llm.extract_subjects(
+                    request.query,
+                    provider=request.llm_provider or None,
+                    model=request.llm_model or None,
+                    base_url=request.llm_base_url or None,
+                    api_key=request.llm_api_key or None,
+                )
+                inferred_subjects = anchor_info.get("subject_anchors", []) or []
+                logger.info(
+                    "email_filter:anchor raw_len=%s subject_anchors=%s inferred=%s",
+                    len(anchor_info.get("raw") or ""),
+                    anchor_info.get("subject_anchors"),
+                    inferred_subjects,
+                )
+                if inferred_subjects:
+                    logger.info("email_filter:inferred sender=%s recipient=%s", inferred_subjects[0] if inferred_subjects else "", inferred_subjects[1] if len(inferred_subjects) > 1 else "")
+            except Exception as e:
+                logger.info("email_filter:anchor extract error %s", e)
+                inferred_subjects = []
+        if not sender and inferred_subjects:
+            sender = inferred_subjects[0]
+        if not recipient and len(inferred_subjects) > 1:
+            recipient = inferred_subjects[1]
+        sender_terms = []
+        recipient_terms = []
+        if sender:
+            sender_terms.append(sender)
+            sender_terms.extend(db.get_alias_emails_for_term(conn, sender))
+        if recipient:
+            recipient_terms.append(recipient)
+            recipient_terms.extend(db.get_alias_emails_for_term(conn, recipient))
+        strict_direction = bool(sender and recipient)
+        subject_contains = request.subject_contains.strip().lower() or None
+        date_from = request.date_from.strip() or None
+        date_to = request.date_to.strip() or None
+        header_count = conn.execute("SELECT COUNT(*) FROM email_headers;").fetchone()[0]
+        logger.info(
+            "email_filter:sender_terms=%s recipient_terms=%s email_headers_rows=%s",
+            sender_terms,
+            recipient_terms,
+            header_count,
+        )
+        primary_rows = []
+        broad_rows = []
+        if sender and recipient:
+            primary_rows = db.query_email_headers(
+                conn,
+                sender_terms=sender_terms,
+                recipient_terms=recipient_terms,
+                strict_direction=True,
+                subject_contains=subject_contains,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            sender_rows = db.query_email_headers(
+                conn,
+                sender_terms=sender_terms,
+                recipient_terms=[],
+                strict_direction=False,
+                subject_contains=subject_contains,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            recipient_rows = db.query_email_headers(
+                conn,
+                sender_terms=[],
+                recipient_terms=recipient_terms,
+                strict_direction=False,
+                subject_contains=subject_contains,
+                date_from=date_from,
+                date_to=date_to,
+            )
+            broad_rows = sender_rows + recipient_rows
+        else:
+            broad_rows = db.query_email_headers(
+                conn,
+                sender_terms=sender_terms,
+                recipient_terms=recipient_terms,
+                strict_direction=strict_direction,
+                subject_contains=subject_contains,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        email_rows = list({row["id"]: row for row in (primary_rows + broad_rows)}.values())
+        primary_pages = {(row["doc_id"], row["page_num"]) for row in primary_rows}
+        allowed_pages = list({(row["doc_id"], row["page_num"]) for row in email_rows})
+        logger.info(
+            "email_filter:matched emails=%s pages=%s sender=%s recipient=%s",
+            len(email_rows),
+            len(allowed_pages),
+            request.sender,
+            request.recipient,
+        )
+        resolved_emails = sorted(
+            {
+                email
+                for row in email_rows
+                for field in (row["from_addr"], row["to_addr"], row["cc_addr"])
+                for email in (field or "").split(";")
+                if email
+            }
+        )
+        if debug:
+            logger.info("email_filter:resolved_emails %s", ",".join(resolved_emails))
+        email_mode = request.email_summary_mode or "auto"
+        summary_like = any(
+            token in request.query.lower()
+            for token in ("summary", "overview", "themes", "worst", "accusations", "allegations")
+        )
+        use_summary = email_mode == "summary" or (email_mode == "auto" and summary_like)
+        if use_summary:
+            summary_payload = summary.email_filtered_summary(
+                query=request.query,
+                conn=conn,
+                allowed_pages=allowed_pages,
+                priority_pages=list(primary_pages),
+                secondary_terms=[sender, recipient],
+                embeddings_device=request.embeddings_device,
+                hf_token=request.hf_token or None,
+                embeddings_engine=request.embeddings_engine,
+                embeddings_worker=request.embeddings_worker,
+                llm_provider=request.llm_provider,
+                llm_model=request.llm_model,
+                llm_base_url=request.llm_base_url,
+                llm_api_key=request.llm_api_key,
+            )
+            logger.info(
+                "email_filter:summary type=%s themes=%s answer_len=%s pool_pages=%s pool_chunks=%s",
+                summary_payload.get("summary_type"),
+                len(summary_payload.get("themes") or []),
+                len(summary_payload.get("answer_markdown") or ""),
+                (summary_payload.get("stats") or {}).get("page_pool"),
+                (summary_payload.get("stats") or {}).get("chunk_pool"),
+            )
+            conn.close()
+            payload = {
+                "query": request.query,
+                "mode_used": "email_filter",
+                "email_mode_used": "summary",
+                "summary_type": summary_payload.get("summary_type"),
+                "answer_markdown": summary_payload.get("answer_markdown", ""),
+                "themes": summary_payload.get("themes", []),
+                "sources": summary_payload.get("sources", []),
+                "stats": {
+                    "matched_emails": len(email_rows),
+                    "matched_pages": len(allowed_pages),
+                    "resolved_emails": resolved_emails,
+                    "sender": request.sender,
+                    "recipient": request.recipient,
+                    **(summary_payload.get("stats") or {}),
+                },
+                "low_evidence": not summary_payload.get("answer_markdown") and not summary_payload.get("themes"),
+            }
+            if debug:
+                raw_preview = (anchor_info or {}).get("raw") or ""
+                payload["debug_info"] = {
+                    "email_mode_used": "summary",
+                    "summary_type": summary_payload.get("summary_type"),
+                    "page_pool": (summary_payload.get("stats") or {}).get("page_pool"),
+                    "chunk_pool": (summary_payload.get("stats") or {}).get("chunk_pool"),
+                    "answer_len": len(summary_payload.get("answer_markdown") or ""),
+                    "theme_count": len(summary_payload.get("themes") or []),
+                    "matched_emails": len(email_rows),
+                    "matched_pages": len(allowed_pages),
+                    "inferred_subjects": inferred_subjects,
+                    "subject_anchors_raw_preview": raw_preview[:500] if raw_preview else None,
+                    "sender": sender,
+                    "recipient": recipient,
+                }
+            return payload
+
+        results = search.fts_search_scoped(
+            conn,
+            request.query,
+            allowed_pages=allowed_pages,
+            limit=request.top_k,
+            redact=request.redact,
+        )
+        if sender and recipient and len(results) < request.top_k:
+            secondary_pages = [page for page in allowed_pages if page not in primary_pages]
+            fallback = search.scoped_term_search(
+                conn,
+                allowed_pages=secondary_pages,
+                terms=[sender, recipient],
+                limit=request.top_k - len(results),
+                redact=request.redact,
+            )
+            results.extend(fallback)
+        answer_markdown = ""
+        if request.answer_mode not in ("sources_only", "evidence_view") and request.llm_provider != "none":
+            answer_markdown = rag.generate_answer(
+                request.query,
+                results,
+                request.answer_mode,
+                {
+                    "provider": request.llm_provider,
+                    "model": request.llm_model,
+                    "base_url": request.llm_base_url,
+                    "api_key": request.llm_api_key,
+                },
+            ).get("answer_markdown", "")
+        conn.close()
+        payload = {
+            "query": request.query,
+            "mode_used": "email_filter",
+            "email_mode_used": "search",
+            "answer_markdown": answer_markdown,
+            "sources": results,
+            "stats": {
+                "matched_emails": len(email_rows),
+                "matched_pages": len(allowed_pages),
+                "resolved_emails": resolved_emails,
+                "sender": request.sender,
+                "recipient": request.recipient,
+            },
+            "low_evidence": len(results) < 2,
+        }
+        if debug and anchor_info is not None:
+            raw_preview = (anchor_info or {}).get("raw") or ""
+            payload["debug_info"] = {
+                "email_mode_used": "search",
+                "inferred_subjects": inferred_subjects,
+                "subject_anchors_raw_preview": raw_preview[:500] if raw_preview else None,
+                "sender": sender,
+                "recipient": recipient,
+            }
+        return payload
+
     index = embeddings.load_index(collections.get_collection_faiss_path(request.collection_id))
     start = max(0, request.offset)
     end = start + max(1, request.top_k)
@@ -706,3 +955,30 @@ def query_endpoint(request: QueryRequest, debug: bool = Query(False)):
     if debug:
         payload["retrieve_debug"] = debug_info
     return payload
+
+
+@app.get("/email/known")
+def get_known_emails(collection_id: str = Query(..., description="Collection ID")):
+    if not collection_id:
+        raise HTTPException(status_code=400, detail="collection_id is required")
+    db_path = collections.get_collection_db_path(collection_id)
+    if not db_path or not db_path.exists():
+        return {"contacts": [], "aliases": []}
+    conn = db.get_connection(db_path)
+    db.init_db(conn)
+    contacts = db.get_known_email_contacts(conn)
+    aliases = db.get_alias_names_and_emails(conn)
+    conn.close()
+    return {"contacts": contacts, "aliases": aliases}
+
+
+@app.post("/email/aliases")
+def add_email_aliases(request: EmailAliasRequest):
+    if not request.collection_id or not request.name or not request.emails:
+        raise HTTPException(status_code=400, detail="collection_id, name, and emails are required")
+    conn = db.get_connection(collections.get_collection_db_path(request.collection_id))
+    db.init_db(conn)
+    added = db.add_email_aliases(conn, request.name, request.emails)
+    conn.commit()
+    conn.close()
+    return {"name": request.name, "added": added}

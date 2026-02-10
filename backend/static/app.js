@@ -44,6 +44,18 @@ const llmModel = document.getElementById("llmModel");
 const llmBaseUrl = document.getElementById("llmBaseUrl");
 const llmApiKey = document.getElementById("llmApiKey");
 const hfToken = document.getElementById("hfToken");
+const emailSender = document.getElementById("emailSender");
+const emailRecipient = document.getElementById("emailRecipient");
+const emailSenderSelect = document.getElementById("emailSenderSelect");
+const emailRecipientSelect = document.getElementById("emailRecipientSelect");
+const emailSubject = document.getElementById("emailSubject");
+const emailDateFrom = document.getElementById("emailDateFrom");
+const emailDateTo = document.getElementById("emailDateTo");
+const emailSummaryMode = document.getElementById("emailSummaryMode");
+const aliasName = document.getElementById("aliasName");
+const aliasEmails = document.getElementById("aliasEmails");
+const addAliasBtn = document.getElementById("addAliasBtn");
+const aliasStatus = document.getElementById("aliasStatus");
 const tabs = document.querySelectorAll(".tab");
 const panels = document.querySelectorAll(".tab-panel");
 
@@ -119,6 +131,7 @@ async function loadCollections() {
   } else if (items.length > 0) {
     setSelectedCollectionId(items[0].id);
   }
+  loadKnownEmails(getSelectedCollectionId());
 }
 
 async function runSearch() {
@@ -226,6 +239,12 @@ async function runAsk(offset = 0, append = false) {
     llm_base_url: llmBaseUrl.value.trim(),
     llm_api_key: llmApiKey.value.trim(),
     session_id: sessionId,
+    sender: emailSender ? emailSender.value.trim() : "",
+    recipient: emailRecipient ? emailRecipient.value.trim() : "",
+    subject_contains: emailSubject ? emailSubject.value.trim() : "",
+    date_from: emailDateFrom ? emailDateFrom.value.trim() : "",
+    date_to: emailDateTo ? emailDateTo.value.trim() : "",
+    email_summary_mode: emailSummaryMode ? emailSummaryMode.value : "auto",
   };
   try {
     const debug = askDebug.checked;
@@ -255,6 +274,15 @@ async function runAsk(offset = 0, append = false) {
     } else if (modeUsed === "corpus_summary") {
       answerBox.textContent = data.answer_markdown || "Corpus summary";
       askStatus.textContent = data.low_evidence ? "Low evidence found." : "Done";
+    } else if (modeUsed === "email_filter") {
+      const stats = data.stats || {};
+      if (data.email_mode_used === "summary") {
+        answerBox.textContent = data.answer_markdown || "";
+        askStatus.textContent = data.low_evidence ? "Low evidence found." : "Done";
+      } else {
+        answerBox.textContent = `Matched emails: ${stats.matched_emails || 0}\nMatched pages: ${stats.matched_pages || 0}`;
+        askStatus.textContent = data.low_evidence ? "Low evidence found." : "Done";
+      }
     } else {
       if (isEvidenceView) {
         answerBox.textContent = "";
@@ -305,6 +333,57 @@ async function runAsk(offset = 0, append = false) {
         `;
         sourcesList.appendChild(li);
       });
+    } else if (modeUsed === "email_filter") {
+      if (data.email_mode_used === "summary" && data.summary_type === "themes") {
+        const themes = data.themes || [];
+        sourcesTitle.textContent = "Themes";
+        sourcesTitle.style.display = themes.length ? "block" : "none";
+        sourcesList.style.display = themes.length ? "block" : "none";
+        sourcesList.innerHTML = "";
+        themes.forEach((theme) => {
+          const li = document.createElement("li");
+          li.className = "result-item";
+          const citations = theme.citations || [];
+          const snippets = citations
+            .map((item) => {
+              const link = `/view?collection_id=${collectionId}&doc_id=${item.doc_id}&page=${item.page_num}`;
+              return `<li><a href="${link}" target="_blank">${item.filename} p.${item.page_num}</a>: ${item.snippet || ""}</li>`;
+            })
+            .join("");
+          li.innerHTML = `
+            <div class="result-title">
+              <span>${theme.title || "Theme"}</span>
+            </div>
+            <div class="snippet">${theme.summary || ""}</div>
+            <ul>${snippets}</ul>
+          `;
+          sourcesList.appendChild(li);
+        });
+      } else {
+        sourcesTitle.textContent = "Email matches";
+        sourcesTitle.style.display = sources.length ? "block" : "none";
+        sourcesList.style.display = sources.length ? "block" : "none";
+        sourcesList.innerHTML = "";
+        sources.forEach((source) => {
+          const li = document.createElement("li");
+          li.className = "result-item";
+          li.innerHTML = `
+            <div class="result-title">
+              <span>${source.filename}</span>
+              <span class="page">Page ${source.page_num}</span>
+            </div>
+            <div class="snippet">${source.snippet}</div>
+            <div class="result-actions">
+              <button class="openBtn">Open</button>
+              <a href="/view?collection_id=${collectionId}&doc_id=${source.doc_id}&page=${source.page_num}&term=${encodeURIComponent(question)}" target="_blank">Open in new tab</a>
+            </div>
+          `;
+          li.querySelector(".openBtn").addEventListener("click", () => {
+            viewerFrame.src = `/view?collection_id=${collectionId}&doc_id=${source.doc_id}&page=${source.page_num}&term=${encodeURIComponent(question)}`;
+          });
+          sourcesList.appendChild(li);
+        });
+      }
     } else {
       sourcesTitle.textContent = "Sources";
       sourcesTitle.style.display = sources.length ? "block" : "none";
@@ -461,7 +540,106 @@ collectionSelect.addEventListener("change", (event) => {
 });
 collectionSelectAsk.addEventListener("change", (event) => {
   setSelectedCollectionId(event.target.value);
+  loadKnownEmails(event.target.value);
 });
+
+async function loadKnownEmails(collectionId) {
+  if (!emailSenderSelect || !emailRecipientSelect || !collectionId) return;
+  const placeholder = "— Choose known or type below —";
+  emailSenderSelect.innerHTML = `<option value="">${placeholder}</option>`;
+  emailRecipientSelect.innerHTML = `<option value="">${placeholder}</option>`;
+  try {
+    const response = await fetch(`/email/known?collection_id=${encodeURIComponent(collectionId)}`);
+    const data = await response.json();
+    const contacts = data.contacts || [];
+    const seen = new Set();
+    contacts.forEach((c) => {
+      const name = (c.name || c.email || "").trim();
+      if (!name || seen.has(name.toLowerCase())) return;
+      seen.add(name.toLowerCase());
+      const opt1 = document.createElement("option");
+      opt1.value = name;
+      opt1.textContent = name;
+      emailSenderSelect.appendChild(opt1);
+      const opt2 = document.createElement("option");
+      opt2.value = name;
+      opt2.textContent = name;
+      emailRecipientSelect.appendChild(opt2);
+    });
+    (data.aliases || []).forEach((a) => {
+      const name = (a.name || "").trim();
+      if (!name || seen.has(name.toLowerCase())) return;
+      seen.add(name.toLowerCase());
+      const opt1 = document.createElement("option");
+      opt1.value = name;
+      opt1.textContent = name + " (alias)";
+      emailSenderSelect.appendChild(opt1);
+      const opt2 = document.createElement("option");
+      opt2.value = name;
+      opt2.textContent = name + " (alias)";
+      emailRecipientSelect.appendChild(opt2);
+    });
+  } catch (err) {
+    // ignore
+  }
+}
+
+if (emailSenderSelect) {
+  emailSenderSelect.addEventListener("change", () => {
+    if (emailSenderSelect.value && emailSender) emailSender.value = emailSenderSelect.value;
+  });
+}
+if (emailRecipientSelect) {
+  emailRecipientSelect.addEventListener("change", () => {
+    if (emailRecipientSelect.value && emailRecipient) emailRecipient.value = emailRecipientSelect.value;
+  });
+}
+
+if (addAliasBtn && aliasName && aliasEmails && aliasStatus) {
+  addAliasBtn.addEventListener("click", async () => {
+    const name = aliasName.value.trim();
+    const emailsStr = aliasEmails.value.trim();
+    if (!name || !emailsStr) {
+      aliasStatus.textContent = "Enter name and at least one email.";
+      aliasStatus.style.color = "#c00";
+      return;
+    }
+    const emails = emailsStr.split(/[\s,;]+/).filter((e) => e.length > 0);
+    if (emails.length === 0) {
+      aliasStatus.textContent = "Enter at least one email.";
+      aliasStatus.style.color = "#c00";
+      return;
+    }
+    const collectionId = getSelectedCollectionId();
+    if (!collectionId) {
+      aliasStatus.textContent = "Select a collection first.";
+      aliasStatus.style.color = "#c00";
+      return;
+    }
+    aliasStatus.textContent = "";
+    try {
+      const response = await fetch("/email/aliases", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ collection_id: collectionId, name, emails }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        aliasStatus.textContent = data.detail?.detail || data.detail || "Failed.";
+        aliasStatus.style.color = "#c00";
+        return;
+      }
+      aliasStatus.textContent = `Added ${data.added || 0} alias(es) for "${data.name}".`;
+      aliasStatus.style.color = "#0a0";
+      aliasName.value = "";
+      aliasEmails.value = "";
+      await loadKnownEmails(collectionId);
+    } catch (err) {
+      aliasStatus.textContent = "Request failed.";
+      aliasStatus.style.color = "#c00";
+    }
+  });
+}
 
 loadCollections();
 
