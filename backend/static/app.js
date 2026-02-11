@@ -56,6 +56,7 @@ const aliasName = document.getElementById("aliasName");
 const aliasEmails = document.getElementById("aliasEmails");
 const addAliasBtn = document.getElementById("addAliasBtn");
 const aliasStatus = document.getElementById("aliasStatus");
+const emailAdvancedDetails = document.getElementById("emailAdvancedDetails");
 const tabs = document.querySelectorAll(".tab");
 const panels = document.querySelectorAll(".tab-panel");
 
@@ -643,6 +644,18 @@ if (addAliasBtn && aliasName && aliasEmails && aliasStatus) {
 
 loadCollections();
 
+if (askMode && emailAdvancedDetails) {
+  function toggleEmailAdvancedVisibility() {
+    const isEmailFilter = askMode.value === "email_filter";
+    emailAdvancedDetails.style.display = isEmailFilter ? "inline-block" : "none";
+    if (!isEmailFilter && emailAdvancedDetails.open) {
+      emailAdvancedDetails.open = false;
+    }
+  }
+  askMode.addEventListener("change", toggleEmailAdvancedVisibility);
+  toggleEmailAdvancedVisibility();
+}
+
 const modelOptions = {
   none: [{ value: "", label: "None" }],
   llama_cpp: [
@@ -664,15 +677,40 @@ const modelOptions = {
   ],
 };
 
-function setModelOptions(provider) {
-  const options = modelOptions[provider] || [];
+function setModelOptionsFromList(options) {
   llmModelSelect.innerHTML = "";
-  options.forEach((opt) => {
+  (options || []).forEach((opt) => {
     const option = document.createElement("option");
     option.value = opt.value;
     option.textContent = opt.label;
     llmModelSelect.appendChild(option);
   });
+}
+
+function setModelOptions(provider) {
+  const options = modelOptions[provider] || [];
+  setModelOptionsFromList(options);
+}
+
+async function loadLlmModels(provider, baseUrl) {
+  if (provider === "none") {
+    setModelOptionsFromList([{ value: "", label: "None" }]);
+    return;
+  }
+  const params = new URLSearchParams({ provider });
+  if (baseUrl) params.set("base_url", baseUrl);
+  try {
+    const response = await fetch("/llm-models?" + params.toString());
+    const data = await response.json();
+    const list = data.models || [];
+    if (list.length) {
+      setModelOptionsFromList(list);
+      return;
+    }
+  } catch (e) {
+    /* fall back to static list */
+  }
+  setModelOptions(llmProvider.value);
 }
 
 function applyProviderDefaults(provider) {
@@ -687,8 +725,8 @@ function applyProviderDefaults(provider) {
 
 function onProviderChange() {
   const provider = llmProvider.value;
-  setModelOptions(provider);
   applyProviderDefaults(provider);
+  loadLlmModels(provider, llmBaseUrl.value.trim());
 }
 
 llmProvider.addEventListener("change", onProviderChange);

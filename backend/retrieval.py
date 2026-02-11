@@ -101,6 +101,25 @@ def _sanitize_fts_query(query: str) -> str:
     return cleaned
 
 
+# Extra stopwords for natural-language questions so keyword FTS matches content terms (e.g. "jerky" from "Is there anything about jerky")
+_QUESTION_FILLER = frozenset(
+    {"is", "are", "was", "were", "there", "here", "anything", "something", "everything", "any", "some", "that", "this", "it", "its"}
+)
+
+
+def _keyword_fts_query(query: str) -> str:
+    """Build an FTS query that ORs content-bearing terms so questions like 'Is there anything about jerky' match chunks containing 'jerky'."""
+    tokens = _tokenize(query)
+    terms = [
+        t for t in tokens
+        if len(t) >= 2 and t not in STOPWORDS and t not in _QUESTION_FILLER
+    ]
+    if not terms:
+        return _sanitize_fts_query(query)
+    # FTS5: "term1 OR term2" matches docs containing any term
+    return " OR ".join(terms)
+
+
 def _tokenize(text: str) -> list[str]:
     return re.findall(r"[A-Za-z0-9_]+", text.lower())
 
@@ -389,7 +408,7 @@ def keyword_search(
     limit: int,
 ) -> list[dict]:
     logger.info("retrieve:keyword query_len=%s limit=%s", len(query), limit)
-    fts_query = _sanitize_fts_query(query)
+    fts_query = _keyword_fts_query(query)
     if not fts_query:
         return []
     rows = conn.execute(
@@ -559,8 +578,8 @@ def retrieve(
             disable_anchor_gate=disable_anchor_gate,
         )
         if debug:
-            diagnostics["keyword_query"] = _sanitize_fts_query(query)
-            diagnostics["keyword_terms"] = _tokenize(diagnostics["keyword_query"])
+            diagnostics["keyword_query"] = _keyword_fts_query(query)
+            diagnostics["keyword_terms"] = _tokenize(query)
             diagnostics["keyword_raw_count"] = len(raw)
             diagnostics["anchor_llm"] = anchor_info
         debug_info = diagnostics
@@ -609,8 +628,8 @@ def retrieve(
             disable_anchor_gate=disable_anchor_gate,
         )
         if debug:
-            diagnostics["keyword_query"] = _sanitize_fts_query(query)
-            diagnostics["keyword_terms"] = _tokenize(diagnostics["keyword_query"])
+            diagnostics["keyword_query"] = _keyword_fts_query(query)
+            diagnostics["keyword_terms"] = _tokenize(query)
             diagnostics["keyword_raw_count"] = len(kw)
             diagnostics["semantic_raw_count"] = len(sem)
             diagnostics["anchor_llm"] = anchor_info

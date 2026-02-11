@@ -72,6 +72,38 @@
                 <option value="email_filter">Email filter</option>
               </select>
             </label>
+            <details class="email-advanced-details" id="emailAdvancedDetails">
+              <summary>Email mode advanced settings</summary>
+              <div class="email-advanced-inner email-filter-section">
+                <p class="email-filter-hint">Filter by <strong>From</strong> (sender) and/or <strong>To</strong> (recipient). Leave blank to infer from your question. Choose a known contact or type a name/email.</p>
+                <div class="email-row">
+                  <label>From (sender)</label>
+                  <select id="emailSenderSelect" aria-label="Choose known sender">
+                    <option value="">— Choose known or type below —</option>
+                  </select>
+                  <input id="emailSender" type="text" placeholder="Name or email (e.g. jeffrey epstein)" />
+                </div>
+                <div class="email-row">
+                  <label>To (recipient)</label>
+                  <select id="emailRecipientSelect" aria-label="Choose known recipient">
+                    <option value="">— Choose known or type below —</option>
+                  </select>
+                  <input id="emailRecipient" type="text" placeholder="Name or email" />
+                </div>
+                <div class="email-row">
+                  <input id="emailSubject" type="text" placeholder="Subject contains (optional)" />
+                  <input id="emailDateFrom" type="text" placeholder="Date from (YYYY-MM-DD)" />
+                  <input id="emailDateTo" type="text" placeholder="Date to (YYYY-MM-DD)" />
+                </div>
+                <label>Email mode
+                  <select id="emailSummaryMode">
+                    <option value="auto" selected>Auto</option>
+                    <option value="search">Search</option>
+                    <option value="summary">Summary</option>
+                  </select>
+                </label>
+              </div>
+            </details>
             <label>Answer
               <select id="answerMode">
                 <option value="summary" selected>Summary</option>
@@ -91,35 +123,6 @@
               </select>
             </label>
             <label><input type="checkbox" id="embeddingsWorker" checked /> Worker process</label>
-          </div>
-          <div class="controls email-filter-section">
-            <p class="email-filter-hint">Filter by <strong>From</strong> (sender) and/or <strong>To</strong> (recipient). Leave blank to infer from your question. Choose a known contact or type a name/email.</p>
-            <div class="email-row">
-              <label>From (sender)</label>
-              <select id="emailSenderSelect" aria-label="Choose known sender">
-                <option value="">— Choose known or type below —</option>
-              </select>
-              <input id="emailSender" type="text" placeholder="Name or email (e.g. jeffrey epstein)" />
-            </div>
-            <div class="email-row">
-              <label>To (recipient)</label>
-              <select id="emailRecipientSelect" aria-label="Choose known recipient">
-                <option value="">— Choose known or type below —</option>
-              </select>
-              <input id="emailRecipient" type="text" placeholder="Name or email" />
-            </div>
-            <div class="email-row">
-              <input id="emailSubject" type="text" placeholder="Subject contains (optional)" />
-              <input id="emailDateFrom" type="text" placeholder="Date from (YYYY-MM-DD)" />
-              <input id="emailDateTo" type="text" placeholder="Date to (YYYY-MM-DD)" />
-            </div>
-            <label>Email mode
-              <select id="emailSummaryMode">
-                <option value="auto" selected>Auto</option>
-                <option value="search">Search</option>
-                <option value="summary">Summary</option>
-              </select>
-            </label>
           </div>
           <div class="controls email-alias-section">
             <p class="email-alias-hint">Add a name and its email addresses so you can search by that name (e.g. &quot;Jeffrey Epstein&quot; → emails from the index).</p>

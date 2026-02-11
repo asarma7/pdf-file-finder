@@ -12,19 +12,20 @@ def build_prompt(
     memory: list[dict] | None = None,
 ) -> list[dict]:
     intro = (
-        "You are a cautious assistant. Use only the provided excerpts. "
+        "You are a cautious assistant. Use only the provided excerpts from this turn. "
         "Every factual claim must include a citation like [filename p.X]. "
-        "If the answer is not supported, say: Not found in the indexed documents."
+        "Base your answer only on the current excerpts; do not state that something is absent because of a previous turn—if the current excerpts contain it, say so. "
+        "If the answer is not in these excerpts, say: Not found in the indexed documents."
     )
     if low_evidence:
         intro = (
             intro
-            + " Evidence is weak; if not supported, say: Not found in the indexed documents."
+            + " Evidence is weak; if not supported by these excerpts, say: Not found in the indexed documents."
         )
     if answer_mode == "summary":
         intro = intro + " Provide a brief summary."
     if memory:
-        intro = intro + " Use prior conversation context if referenced."
+        intro = intro + " You may use prior conversation for context, but factual claims must be supported by the current excerpts."
     context_lines = []
     for item in excerpts:
         label = f"{item['filename']} p.{item['page_num']}"

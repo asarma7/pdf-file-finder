@@ -2,6 +2,9 @@ import os
 import threading
 import logging
 import re
+from pathlib import Path
+
+import httpx
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -9,7 +12,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from . import anchor_llm, collections, contact_resolution, count, db, embeddings, indexer, rag, retrieval, search, safety, summary
-from .utils import DATA_DIR, ensure_data_dirs, normalize_email_for_lookup
+from .utils import DATA_DIR, MODELS_DIR, ensure_data_dirs, normalize_email_for_lookup
 
 
 app = FastAPI(title="Document Q&A")
@@ -317,6 +320,77 @@ def _route_query(query: str, mode: str) -> dict:
 @app.get("/collections")
 def list_collections():
     return {"collections": collections.list_collections()}
+
+
+# Directories to scan for local LLM model files (e.g. .gguf for llama.cpp)
+_LLM_MODEL_DIRS = (Path(DATA_DIR.parent) / "models", MODELS_DIR)
+
+
+@app.get("/llm-models")
+def list_llm_models(
+    provider: str = Query(..., description="llama_cpp, ollama, or openai_compat"),
+    base_url: str = Query(""),
+):
+    """Return list of model names/ids for the given LLM provider. Populates the Model dropdown."""
+    base_url = (base_url or "").strip().rstrip("/")
+    api_key = (os.getenv("LLM_API_KEY") or "").strip()
+    models: list[dict] = []
+    if provider == "llama_cpp":
+        seen: set[str] = set()
+        for dir_path in _LLM_MODEL_DIRS:
+            if not dir_path.exists() or not dir_path.is_dir():
+                continue
+            for f in sorted(dir_path.iterdir()):
+                if not f.is_file():
+                    continue
+                suf = f.suffix.lower()
+                if suf == ".gguf" or f.name.endswith(".gguf.bin"):
+                    name = f.stem if suf == ".gguf" else f.name
+                    if name not in seen:
+                        seen.add(name)
+                        models.append({"value": name, "label": name})
+        if not models:
+            models = [
+                {"value": "model", "label": "model (add .gguf files to project models/ or data/models/)"},
+            ]
+    elif provider == "ollama":
+        url = (base_url or "http://127.0.0.1:11434") + "/api/tags"
+        try:
+            with httpx.Client(timeout=10) as client:
+                resp = client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+                for m in data.get("models") or []:
+                    name = (m.get("name") or m.get("model", "")).strip()
+                    if name:
+                        models.append({"value": name, "label": name})
+        except Exception as e:
+            logger.info("llm-models:ollama list failed %s", e)
+            models = [
+                {"value": "llama3.1:8b", "label": "llama3.1:8b (Ollama not reachable)"},
+            ]
+    elif provider == "openai_compat":
+        url = (base_url or "https://api.openai.com") + "/v1/models"
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            with httpx.Client(timeout=15) as client:
+                resp = client.get(url, headers=headers or None)
+                resp.raise_for_status()
+                data = resp.json()
+                for m in data.get("data") or []:
+                    mid = (m.get("id") or m.get("model") or "").strip()
+                    if mid and not mid.startswith("embedding"):
+                        models.append({"value": mid, "label": mid})
+        except Exception as e:
+            logger.info("llm-models:openai_compat list failed %s", e)
+            models = [
+                {"value": "gpt-4o-mini", "label": "gpt-4o-mini (list failed)"},
+            ]
+    else:
+        return {"models": []}
+    return {"models": models}
 
 
 @app.post("/collections")
