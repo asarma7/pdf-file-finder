@@ -192,6 +192,24 @@ def _is_summary_like(query: str) -> bool:
     return any(token in lowered for token in SUMMARY_TOKENS)
 
 
+def _is_refusal(text: str) -> bool:
+    """True if the summary looks like a short refusal (e.g. 'not found in the indexed documents'), not a substantive summary."""
+    if not text or len(text.strip()) < 20:
+        return True
+    lowered = text.strip().lower()
+    # Only treat as refusal when response is short and clearly a non-answer (avoid matching "does not provide" inside real summaries)
+    if len(lowered) > 150:
+        return False
+    refusal_phrases = (
+        "not found in the indexed documents",
+        "not found in the documents",
+        "no relevant information",
+        "cannot find",
+        "no content",
+    )
+    return any(phrase in lowered for phrase in refusal_phrases)
+
+
 def email_filtered_summary(
     *,
     query: str,
@@ -288,27 +306,35 @@ def email_filtered_summary(
             engine=embeddings_engine,
             use_worker=embeddings_worker,
         )
-        clusters = max(2, min(6, math.ceil(len(cluster_items) / 40)))
+        # Allow 1 theme when few chunks; avoid forcing 2 when not applicable
+        clusters = max(1, min(6, math.ceil(len(cluster_items) / 40)))
         labels, centroids = _kmeans(cluster_vectors, clusters)
         grouped = _select_top_by_cluster(cluster_items, cluster_vectors, labels, centroids, per_cluster=3)
         themes = []
         answer_blocks = []
-        for idx, group in enumerate(grouped, start=1):
+        theme_idx = 0
+        for group in grouped:
             if not group:
                 continue
             summary_text = ""
             if llm_provider and llm_provider != "none":
-                summary_text = rag.generate_answer(
-                    f"Summarize the theme for: {query}",
-                    group,
-                    "summary",
-                    {
-                        "provider": llm_provider,
-                        "model": llm_model,
-                        "base_url": llm_base_url,
-                        "api_key": llm_api_key,
-                    },
-                ).get("answer_markdown", "")
+                summary_text = (
+                    rag.generate_answer(
+                        f"Summarize the theme for: {query}",
+                        group,
+                        "summary",
+                        {
+                            "provider": llm_provider,
+                            "model": llm_model,
+                            "base_url": llm_base_url,
+                            "api_key": llm_api_key,
+                        },
+                    ).get("answer_markdown", "") or ""
+                ).strip()
+            # Skip themes with no content or refusal-style response
+            if not summary_text or _is_refusal(summary_text):
+                continue
+            theme_idx += 1
             citations = [
                 {
                     "doc_id": item["doc_id"],
@@ -320,17 +346,38 @@ def email_filtered_summary(
                 }
                 for item in group
             ]
-            title = f"Theme {idx}"
+            title = f"Theme {theme_idx}"
             themes.append({"title": title, "summary": summary_text, "citations": citations})
-            if summary_text:
-                answer_blocks.append(f"{title}: {summary_text}")
-        return {
-            "summary_type": "themes",
-            "answer_markdown": "\n\n".join(answer_blocks),
-            "themes": themes,
-            "sources": [],
-            "stats": {"page_pool": len(pages), "chunk_pool": len(items)},
-        }
+            answer_blocks.append(f"{title}: {summary_text}")
+        if themes:
+            return {
+                "summary_type": "themes",
+                "answer_markdown": "\n\n".join(answer_blocks),
+                "themes": themes,
+                "sources": [],
+                "stats": {"page_pool": len(pages), "chunk_pool": len(items)},
+            }
+        # Fallback: all theme summaries were empty or refused; still return a single summary so user gets an answer
+        if items and llm_provider and llm_provider != "none":
+            top_items = ranked[:12]
+            answer_markdown = rag.generate_answer(
+                query,
+                top_items,
+                "summary",
+                {
+                    "provider": llm_provider,
+                    "model": llm_model,
+                    "base_url": llm_base_url,
+                    "api_key": llm_api_key,
+                },
+            ).get("answer_markdown", "")
+            return {
+                "summary_type": "single",
+                "answer_markdown": answer_markdown,
+                "themes": [],
+                "sources": top_items,
+                "stats": {"page_pool": len(pages), "chunk_pool": len(items)},
+            }
 
     top_items = ranked[:12]
     answer_markdown = ""

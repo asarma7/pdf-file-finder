@@ -9,7 +9,13 @@ import fitz
 
 import re
 from . import chunking, collections, db, embeddings
-from .utils import ensure_data_dirs, has_tool, sha256_file, stable_ocr_name
+from .utils import (
+    ensure_data_dirs,
+    has_tool,
+    normalize_header_for_email_extraction,
+    sha256_file,
+    stable_ocr_name,
+)
 
 
 MIN_TEXT_LEN = 20
@@ -134,8 +140,20 @@ def _is_plausible_email(s: str) -> bool:
     return True
 
 
+def _clean_name_part(name_part: str) -> str:
+    """Strip leading to:/from: and remove bracketed/parenthetical email-like chunks."""
+    s = (name_part or "").strip()
+    s = re.sub(r"^(?:to|from)\s*:\s*", "", s, flags=re.IGNORECASE)
+    # Remove [...] or (...)] blocks that look like duplicate/broken email
+    s = re.sub(r"\[[^\]]*\]", " ", s)
+    s = re.sub(r"\([^)]*\)", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def _parse_names_and_emails(value: str) -> tuple[str, str]:
     value = _normalize_header_value(value)
+    value = normalize_header_for_email_extraction(value)
     raw_emails = _EMAIL_REGEX.findall(value)
     emails = [e for e in raw_emails if _is_plausible_email(e)]
     name_part = value
@@ -143,6 +161,7 @@ def _parse_names_and_emails(value: str) -> tuple[str, str]:
         name_part = name_part.replace(email, " ")
     name_part = re.sub(r"[<>\"']", " ", name_part)
     name_part = re.sub(r"\s+", " ", name_part).strip()
+    name_part = _clean_name_part(name_part)
     name_part = name_part.lower()
     email_part = ";".join(sorted({e.lower() for e in emails}))
     return name_part, email_part

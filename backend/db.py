@@ -1,6 +1,11 @@
 import sqlite3
 from pathlib import Path
 
+from .utils import (
+    extract_canonical_email_from_text,
+    normalize_email_for_lookup,
+)
+
 
 def get_connection(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
@@ -277,7 +282,8 @@ def get_alias_emails(conn: sqlite3.Connection, name: str) -> list[str]:
 
 
 def get_alias_emails_for_term(conn: sqlite3.Connection, term: str) -> list[str]:
-    """Emails for exact name match, or for any alias whose name contains the term (e.g. 'epstein' -> 'jeffrey epstein')."""
+    """Emails for exact name match, or for any alias whose name contains the term.
+    So e.g. term 'epstein' returns emails from alias name 'jeffrey epstein'; no need for exact wording."""
     if not term:
         return []
     term = term.lower().strip()
@@ -291,8 +297,59 @@ def get_alias_emails_for_term(conn: sqlite3.Connection, term: str) -> list[str]:
     return [row["email"] for row in rows]
 
 
+def get_alias_email_to_name_map(conn: sqlite3.Connection) -> dict[str, str]:
+    """Build map: normalized_email -> alias name (so one canonical name per entity)."""
+    rows = conn.execute(
+        "SELECT name, email FROM email_aliases WHERE name != '' AND email != '';"
+    ).fetchall()
+    out: dict[str, str] = {}
+    for row in rows:
+        name = (row["name"] or "").strip()
+        email = (row["email"] or "").strip()
+        if not name or not email:
+            continue
+        canonical = normalize_email_for_lookup(email)
+        if canonical:
+            out[canonical] = name
+    return out
+
+
+def get_raw_email_contacts(conn: sqlite3.Connection) -> list[dict]:
+    """Distinct (display, addr) from email_headers with no resolution. For ask-time variant expansion."""
+    rows = conn.execute(
+        """
+        SELECT DISTINCT display, addr FROM (
+            SELECT from_name AS display, from_addr AS addr FROM email_headers WHERE from_addr != '' OR from_name != ''
+            UNION
+            SELECT to_name AS display, to_addr AS addr FROM email_headers WHERE to_addr != '' OR to_name != ''
+            UNION
+            SELECT cc_name AS display, cc_addr AS addr FROM email_headers WHERE cc_addr != '' OR cc_name != ''
+        ) WHERE display != '' OR addr != ''
+        """
+    ).fetchall()
+    out = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        display = (row["display"] or "").strip() or (row["addr"] or "").strip()
+        addr = (row["addr"] or "").strip()
+        if not display and not addr:
+            continue
+        key = (display, addr)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": display, "email": addr})
+    return out
+
+
+def _alias_email_to_name_map(conn: sqlite3.Connection) -> dict[str, str]:
+    """Alias for get_alias_email_to_name_map for internal use."""
+    return get_alias_email_to_name_map(conn)
+
+
 def get_known_email_contacts(conn: sqlite3.Connection) -> list[dict]:
-    """Distinct names and emails from headers (from/to/cc) for dropdowns."""
+    """Distinct names and emails from headers, resolved to canonical entity when an alias matches.
+    Add aliases first (e.g. 'Jeffrey Epstein' -> jeevacation@gmail.com) so variants collapse to one dropdown entry."""
     rows = conn.execute(
         """
         SELECT DISTINCT display, addr FROM (
@@ -305,18 +362,24 @@ def get_known_email_contacts(conn: sqlite3.Connection) -> list[dict]:
         ORDER BY LOWER(COALESCE(display, addr));
         """
     ).fetchall()
-    contacts: list[dict] = []
-    seen: set[tuple[str, str]] = set()
+    alias_by_email = _alias_email_to_name_map(conn)
+    grouped: dict[tuple[str, str], None] = {}
     for row in rows:
         display = (row["display"] or "").strip() or (row["addr"] or "").strip()
         addr = (row["addr"] or "").strip()
         if not display and not addr:
             continue
-        key = (display.lower(), addr.lower())
-        if key in seen:
+        canonical_email = normalize_email_for_lookup(addr) if addr else extract_canonical_email_from_text(display)
+        canonical_name = alias_by_email.get(canonical_email) if canonical_email else None
+        if canonical_name and canonical_email:
+            key = (canonical_name, canonical_email)
+        else:
+            key = (display or addr, canonical_email or addr or display)
+        if key in grouped:
             continue
-        seen.add(key)
-        contacts.append({"name": display or addr, "email": addr or display})
+        grouped[key] = None
+    contacts = [{"name": k[0], "email": k[1]} for k in grouped]
+    contacts.sort(key=lambda c: (c["name"].lower(), c["email"].lower()))
     return contacts
 
 

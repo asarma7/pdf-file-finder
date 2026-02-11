@@ -8,8 +8,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from . import anchor_llm, collections, count, db, embeddings, indexer, rag, retrieval, search, safety, summary
-from .utils import DATA_DIR, ensure_data_dirs
+from . import anchor_llm, collections, contact_resolution, count, db, embeddings, indexer, rag, retrieval, search, safety, summary
+from .utils import DATA_DIR, ensure_data_dirs, normalize_email_for_lookup
 
 
 app = FastAPI(title="Document Q&A")
@@ -28,6 +28,29 @@ app.mount(
 UPLOAD_STATUS: dict[str, dict] = {}
 UPLOAD_LOCK = threading.Lock()
 MEMORY_LOCK = threading.Lock()
+
+
+def _extract_topic_from_query(query: str) -> str | None:
+    """If the query explicitly mentions a topic (e.g. 'regarding food', 'about travel'), return it.
+    Avoids relying on the LLM to return the topic as second anchor (e.g. it may return a wrong person)."""
+    if not query or len(query.strip()) < 4:
+        return None
+    q = query.strip().lower()
+    # Match "regarding X", "about X", "related to X", "on the topic of X", "concerning X", "involving X"
+    for pattern in (
+        r"\bregarding\s+([a-z][a-z0-9\s]{0,40}?)(?:\s+[\.\?]|\s*$|\.)",
+        r"\babout\s+([a-z][a-z0-9\s]{0,40}?)(?:\s+emails|\s+[\.\?]|\s*$|\.)",
+        r"\brelated\s+to\s+([a-z][a-z0-9\s]{0,40}?)(?:\s+[\.\?]|\s*$|\.)",
+        r"\b(?:on\s+the\s+topic\s+of|topic\s+of)\s+([a-z][a-z0-9\s]{0,40}?)(?:\s+[\.\?]|\s*$|\.)",
+        r"\bconcerning\s+([a-z][a-z0-9\s]{0,40}?)(?:\s+[\.\?]|\s*$|\.)",
+        r"\binvolving\s+([a-z][a-z0-9\s]{0,40}?)(?:\s+[\.\?]|\s*$|\.)",
+    ):
+        m = re.search(pattern, q, re.IGNORECASE)
+        if m:
+            topic = m.group(1).strip()
+            if len(topic) >= 2 and len(topic) <= 50:
+                return topic
+    return None
 MEMORY_STORE: dict[str, list[dict]] = {}
 CACHE_LOCK = threading.Lock()
 CACHE_STORE: dict[str, list[dict]] = {}
@@ -670,15 +693,47 @@ def query_endpoint(request: QueryRequest, debug: bool = Query(False)):
                     anchor_info.get("subject_anchors"),
                     inferred_subjects,
                 )
-                if inferred_subjects:
-                    logger.info("email_filter:inferred sender=%s recipient=%s", inferred_subjects[0] if inferred_subjects else "", inferred_subjects[1] if len(inferred_subjects) > 1 else "")
             except Exception as e:
                 logger.info("email_filter:anchor extract error %s", e)
                 inferred_subjects = []
+        inferred_topic: str | None = None
+        query_topic = _extract_topic_from_query(request.query or "")
         if not sender and inferred_subjects:
             sender = inferred_subjects[0]
         if not recipient and len(inferred_subjects) > 1:
-            recipient = inferred_subjects[1]
+            # Prefer topic extracted from query ("regarding X", "about X") so we don't use a wrong second person from the LLM
+            if query_topic:
+                inferred_topic = query_topic
+                recipient = None
+            else:
+                second_anchor = (inferred_subjects[1] or "").strip().lower()
+                is_second_person = (
+                    "@" in second_anchor
+                    or bool(db.get_alias_emails_for_term(conn, second_anchor))
+                )
+                if is_second_person:
+                    recipient = second_anchor
+                else:
+                    inferred_topic = second_anchor or None
+                    recipient = None
+        if query_topic and inferred_topic is None:
+            inferred_topic = query_topic
+        # Never use a topic (e.g. "food") as recipient; treat as topic-only so we match all to/from the person
+        if recipient and inferred_topic and recipient == inferred_topic:
+            recipient = None
+        # With one inferred entity (or topic as second): match both FROM and TO/CC unless user said only "from" or only "to"
+        if not recipient and sender:
+            q = (request.query or "").lower()
+            from_only = "emails from " in q and " to " not in q
+            to_only = "emails to " in q and " from " not in q
+            if not from_only and not to_only:
+                recipient = sender
+        logger.info(
+            "email_filter:resolved sender=%s recipient=%s inferred_topic=%s",
+            sender or "",
+            recipient or "",
+            inferred_topic or "",
+        )
         sender_terms = []
         recipient_terms = []
         if sender:
@@ -688,6 +743,7 @@ def query_endpoint(request: QueryRequest, debug: bool = Query(False)):
             recipient_terms.append(recipient)
             recipient_terms.extend(db.get_alias_emails_for_term(conn, recipient))
         strict_direction = bool(sender and recipient)
+        # Use user-provided subject filter only; don't force topic into subject (e.g. "food" would exclude subject "Jerky")
         subject_contains = request.subject_contains.strip().lower() or None
         date_from = request.date_from.strip() or None
         date_to = request.date_to.strip() or None
@@ -761,18 +817,27 @@ def query_endpoint(request: QueryRequest, debug: bool = Query(False)):
         if debug:
             logger.info("email_filter:resolved_emails %s", ",".join(resolved_emails))
         email_mode = request.email_summary_mode or "auto"
-        summary_like = any(
-            token in request.query.lower()
-            for token in ("summary", "overview", "themes", "worst", "accusations", "allegations")
-        )
-        use_summary = email_mode == "summary" or (email_mode == "auto" and summary_like)
+        if email_mode == "auto":
+            intent = anchor_llm.classify_email_intent(
+                request.query,
+                provider=request.llm_provider or None,
+                model=request.llm_model or None,
+                base_url=request.llm_base_url or None,
+                api_key=request.llm_api_key or None,
+            )
+            use_summary = intent == "summary_thematic"
+        else:
+            use_summary = email_mode == "summary"
         if use_summary:
+            summary_terms = [t for t in [sender, recipient] if t]
+            if inferred_topic and inferred_topic not in summary_terms:
+                summary_terms.append(inferred_topic)
             summary_payload = summary.email_filtered_summary(
                 query=request.query,
                 conn=conn,
                 allowed_pages=allowed_pages,
                 priority_pages=list(primary_pages),
-                secondary_terms=[sender, recipient],
+                secondary_terms=summary_terms,
                 embeddings_device=request.embeddings_device,
                 hf_token=request.hf_token or None,
                 embeddings_engine=request.embeddings_engine,
@@ -969,6 +1034,23 @@ def get_known_emails(collection_id: str = Query(..., description="Collection ID"
     contacts = db.get_known_email_contacts(conn)
     aliases = db.get_alias_names_and_emails(conn)
     conn.close()
+    canonical_names = list(dict.fromkeys(a["name"] for a in aliases))
+    raw_contacts = [c for c in contacts if c["name"] not in set(canonical_names)]
+    if raw_contacts and canonical_names:
+        raw_names = [c["name"] for c in raw_contacts]
+        mapping = contact_resolution.resolve_raw_to_canonical(raw_names, canonical_names)
+        if mapping:
+            for c in contacts:
+                c["name"] = mapping.get(c["name"], c["name"])
+            seen: set[tuple[str, str]] = set()
+            deduped = []
+            for c in contacts:
+                key = (c["name"], c["email"])
+                if key not in seen:
+                    seen.add(key)
+                    deduped.append(c)
+            deduped.sort(key=lambda x: (x["name"].lower(), x["email"].lower()))
+            contacts = deduped
     return {"contacts": contacts, "aliases": aliases}
 
 

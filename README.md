@@ -133,6 +133,7 @@ Tips:
 - Anchor LLM: use your selected LLM to detect subject/descriptor anchors.
 - Evidence view: skip summary and show sources first.
  - Email filter fields: sender/recipient names or emails, subject/date filters.
+- **Email filter: add aliases first** so that many header variants (e.g. “jeffrey e.”, “je vacation”, “jeevacation©gmail.com”) collapse to one person in the From/To dropdowns. See “Email filter and aliases” below.
 - CPU embeddings: force embeddings to run on CPU.
 - Embeddings engine:
   - FastEmbed (default, most stable)
@@ -272,6 +273,19 @@ This app is strongest for retrieval-first questions where you want grounded cita
 - **Direct keyword search** (Search tab): `non-prosecution agreement`
 - **Anchor LLM**: “Is Bill Cosby mentioned in the Epstein files?”
 
+### Email filter and aliases
+Email filter uses From/To/Cc parsed from the first part of each page. Indexing normalizes common redaction/OCR (e.g. `©` → `@`, `ftmaitcom` → `gmail.com`) so addresses are extracted when possible.
+
+**To get one canonical person in the From/To dropdown (e.g. “Jeffrey Epstein” instead of many variants):**
+
+1. **Add an alias first** in the Ask tab under “Add alias”: enter the **canonical display name** (e.g. `Jeffrey Epstein`) and the **email address(es)** for that person (e.g. `jeevacation@gmail.com`), then click “Add alias”.
+2. The dropdown is built from indexed headers **resolved against the alias table**. Any header whose normalized email matches one of that alias’s addresses (or whose name matches) is shown as the single canonical name (e.g. “Jeffrey Epstein”) in the dropdown.
+3. You can link multiple addresses to one person: add one alias with multiple emails (comma-separated). All of them resolve to the same canonical entity.
+
+**Without adding an alias:** the dropdown lists every distinct (name, email) as extracted from the index, so you may see many variants (e.g. “jeffrey e.”, “je vacation”, “jeevacation@gmail.com”) for the same person. Adding at least one alias per person is required for both email-based and embedding-based resolution (one entry per person).
+
+**Embedding-based resolution:** After alias (email) resolution, any remaining dropdown entries whose display name does not match an alias are compared to alias names using the same embedding model as retrieval. If a raw name is close enough in embedding space to a canonical alias name, it is merged into that entity. Threshold: `CONTACT_RESOLUTION_THRESHOLD` (default 0.82 cosine similarity).
+
 ### Limits to be aware of
 - **Broad subjective requests** (e.g., “worst accusations”) are not handled well yet.  
   You’ll get better results by narrowing to a person, event, or term.
@@ -280,7 +294,7 @@ This app is strongest for retrieval-first questions where you want grounded cita
 - **Corpus summary is sampled**: it clusters a broad pool of passages and summarizes themes.  
   It’s useful for orientation, not for exhaustive coverage.
 - **Email filter depends on headers**: it works best when From/To/Cc are present and cleanly parsed.
-- **Name matching improves over time**: confirmed aliases are stored for future queries.
+- **Add aliases first** for email filter if you want one canonical name per person in the From/To dropdown; otherwise you’ll see raw header variants.
 - **Email summaries are sampled**: summaries are built from a filtered subset of pages/chunks.
 
 

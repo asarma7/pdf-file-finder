@@ -160,6 +160,65 @@ def build_subject_messages(query: str) -> list[dict]:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def build_email_intent_messages(query: str) -> list[dict]:
+    system = (
+        "You classify the user's intent for an email search. "
+        "Reply with a single JSON line with key email_answer_type. "
+        "Use summary_thematic when the user wants an overview, key topics, themes, allegations, or a summary of what is in the emails. "
+        "Use search when the user wants specific facts, a direct answer, or to find particular information. "
+        "Reply with only: {\"email_answer_type\": \"summary_thematic\"} or {\"email_answer_type\": \"search\"}"
+    )
+    user = f"User question: {query}\nReply with one JSON line."
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def classify_email_intent(
+    query: str,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+) -> str:
+    """Return 'summary_thematic' or 'search'. Defaults to 'search' on failure."""
+    provider = provider or os.getenv("ANCHOR_LLM_PROVIDER", "ollama")
+    if provider == "llama_cpp":
+        provider = "openai_compat"
+    model = model or os.getenv("ANCHOR_LLM_MODEL", "llama3.1:8b")
+    if provider == "openai_compat":
+        base_url = base_url or os.getenv("ANCHOR_LLM_BASE_URL", "https://api.openai.com")
+    else:
+        base_url = base_url or os.getenv("ANCHOR_LLM_BASE_URL", "http://127.0.0.1:11434")
+    api_key = api_key or os.getenv("ANCHOR_LLM_API_KEY", "")
+
+    try:
+        messages = build_email_intent_messages(query)
+        if provider == "ollama":
+            text = call_ollama(messages, model, base_url)
+        elif provider == "openai_compat":
+            text = call_openai_compat(messages, model, base_url, api_key)
+        else:
+            return "search"
+        payload = _extract_json(text)
+        if not isinstance(payload, dict):
+            return "search"
+        intent = (payload.get("email_answer_type") or "").strip().lower()
+        if intent == "summary_thematic":
+            logger.info("anchor_llm.classify_email_intent intent=summary_thematic")
+            return "summary_thematic"
+        if "summary" in intent or "thematic" in intent:
+            return "summary_thematic"
+        if intent == "search":
+            logger.info("anchor_llm.classify_email_intent intent=search")
+            return "search"
+        if "search" in text.lower():
+            return "search"
+        return "search"
+    except Exception as e:
+        logger.info("anchor_llm.classify_email_intent error=%s default=search", e)
+        return "search"
+
+
 def extract_anchors(
     query: str,
     *,
